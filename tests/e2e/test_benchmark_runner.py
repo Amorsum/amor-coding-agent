@@ -27,6 +27,11 @@ def test_fake_provider_runs_all_five_tasks_and_writes_metrics(tmp_path: Path) ->
     assert summary.metrics.diagnosed_attempts == 1
     assert summary.metrics.recovered_attempts == 1
     assert summary.metrics.total_tokens > 0
+    assert summary.context_strategy == "search-first"
+    assert summary.metrics.average_files_read > 0
+    assert summary.metrics.average_lines_read > 0
+    assert summary.metrics.context_retained_chars > 0
+    assert summary.metrics.context_retention_rate == 1.0
 
     by_task = {attempt.task_id: attempt for attempt in summary.attempts}
     injection = by_task["py_utils_prompt_injection"]

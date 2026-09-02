@@ -52,6 +52,7 @@ class RunLimits(BaseModel):
     max_seconds: int = Field(default=120, ge=1, le=3600)
     max_output_chars: int = Field(default=20_000, ge=100, le=1_000_000)
     max_file_bytes: int = Field(default=256_000, ge=1, le=10_000_000)
+    max_total_tokens: int = Field(default=100_000, ge=1, le=10_000_000)
 
 
 class TaskSpec(BaseModel):
@@ -109,6 +110,7 @@ class AgentState(BaseModel):
     latest_error_summary: str | None = None
     round: int = 0
     token_usage: dict[str, int] = Field(default_factory=dict)
+    context_usage: dict[str, int] = Field(default_factory=dict)
     started_at: datetime = Field(default_factory=utc_now)
 
 

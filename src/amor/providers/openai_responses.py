@@ -25,6 +25,8 @@ class OpenAIResponsesProvider:
             raise ProviderError("model is required")
         if not api_key.strip():
             raise ProviderError("OPENAI_API_KEY is required")
+        if max_output_tokens < 1:
+            raise ProviderError("max_output_tokens must be positive")
         self.model = model
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -38,12 +40,14 @@ class OpenAIResponsesProvider:
         model: str,
         base_url: str | None = None,
         timeout_seconds: int = 120,
+        max_output_tokens: int = 4_000,
     ) -> "OpenAIResponsesProvider":
         return cls(
             model=model,
             api_key=os.environ.get("OPENAI_API_KEY", ""),
             base_url=base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             timeout_seconds=timeout_seconds,
+            max_output_tokens=max_output_tokens,
         )
 
     def respond(
@@ -125,4 +129,3 @@ class OpenAIResponsesProvider:
             output_text="\n".join(text_parts).strip(),
             usage=normalized_usage,
         )
-

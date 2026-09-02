@@ -28,6 +28,16 @@ def calculate_metrics(attempts: list[BenchmarkAttemptRecord], task_ids: list[str
         for attempt in attempts
         if not attempt.outcome_matches_expected
     )
+    read_calls = sum(attempt.files_read for attempt in attempts)
+    search_calls = sum(attempt.search_calls for attempt in attempts)
+    requested_chars = sum(attempt.context_requested_chars for attempt in attempts)
+    retained_chars = sum(attempt.context_retained_chars for attempt in attempts)
+    costs = [attempt.estimated_cost_usd for attempt in attempts]
+    total_cost = (
+        round(sum(cost for cost in costs if cost is not None), 8)
+        if costs and all(cost is not None for cost in costs)
+        else None
+    )
 
     return BenchmarkMetrics(
         task_count=len(task_ids),
@@ -53,6 +63,23 @@ def calculate_metrics(attempts: list[BenchmarkAttemptRecord], task_ids: list[str
         total_input_tokens=sum(attempt.input_tokens for attempt in attempts),
         total_output_tokens=sum(attempt.output_tokens for attempt in attempts),
         total_tokens=sum(attempt.total_tokens for attempt in attempts),
+        total_estimated_cost_usd=total_cost,
+        cost_per_success_usd=(
+            round(total_cost / len(successes), 8)
+            if total_cost is not None and successes
+            else None
+        ),
+        average_files_read=_average([attempt.unique_files_read for attempt in attempts]),
+        average_lines_read=_average([attempt.lines_read for attempt in attempts]),
+        repeated_read_rate=_rate(sum(attempt.repeated_reads for attempt in attempts), read_calls),
+        zero_result_search_rate=_rate(sum(attempt.zero_result_searches for attempt in attempts), search_calls),
+        context_requested_chars=requested_chars,
+        context_retained_chars=retained_chars,
+        context_retention_rate=_rate(retained_chars, requested_chars),
+        context_compressions=sum(attempt.context_compressions for attempt in attempts),
+        average_context_relevance_rate=round(
+            mean(attempt.context_relevance_rate for attempt in attempts), 4
+        ) if attempts else 0.0,
         failure_categories=dict(sorted(failures.items())),
     )
 

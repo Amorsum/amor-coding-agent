@@ -66,6 +66,42 @@ $env:OPENAI_API_KEY = "your-api-key"
 
 Fake Provider 的 Token 是确定性测试数据，不能作为真实模型成本或效率结论。
 
+## 对照上下文策略
+
+第四迭代提供 `broad` 与 `search-first` 两种上下文策略。前者先建立较宽的仓库视图，后者优先搜索并局部读取。以下命令在相同任务、Provider、预算和重复次数下运行两组 Benchmark，并写出差异报告：
+
+```powershell
+.venv\Scripts\amor experiment --provider fake --repeat 3
+```
+
+真实模型实验需要显式确认代码发送，并指定模型：
+
+```powershell
+$env:OPENAI_API_KEY = "your-api-key"
+
+.venv\Scripts\amor experiment `
+  --provider openai-responses `
+  --model "your-responses-api-model-id" `
+  --repeat 3 `
+  --context-budget-chars 40000 `
+  --max-output-tokens 4000 `
+  --input-cost-per-million 0 `
+  --output-cost-per-million 0 `
+  --confirm-send-code
+```
+
+价格参数必须成对提供，单位是美元/百万 Token。请把示例中的 `0` 替换为实验时记录的价格快照；AMOR 不内置可能过期的模型价格。结果位于 `artifacts/experiments/<experiment-id>/comparison.json`，并链接两种策略各自的完整 Benchmark 轨迹。
+
+每次模型运行都会记录：
+
+- 成功读取的文件数、代码行数与重复读取率
+- 搜索次数与无结果搜索率
+- 工具输出请求字符数、保留字符数和压缩次数
+- 已修改文件在读取文件中的占比
+- 输入/输出 Token、可选的估算费用和单位成功费用
+
+工具输出受跨轮总上下文预算约束；预算不足时保留首尾信息和工具摘要。任务、验收条件、写入范围及剩余 Token 预算会在每轮 instructions 中重新发送。Responses API 的 `previous_response_id` 用于延续多轮状态，但不会继承上一轮 instructions，详见 [OpenAI Responses API 文档](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)。
+
 ## 对本地仓库运行模型 Agent
 
 目标仓库必须已经提交且工作区干净。AMOR 从当前 `HEAD` 创建隔离 worktree，不直接修改原仓库。
@@ -89,6 +125,10 @@ $env:OPENAI_API_KEY = "your-api-key"
   --allow "tests/**" `
   --validation-json '["python","-m","pytest"]' `
   --model "your-responses-api-model-id" `
+  --strategy search-first `
+  --context-budget-chars 40000 `
+  --max-tokens 100000 `
+  --max-output-tokens 4000 `
   --confirm-send-code
 ```
 
@@ -101,6 +141,7 @@ $env:OPENAI_API_KEY = "your-api-key"
 - 当前仍使用本机子进程执行测试，不要对恶意或来源不明的仓库运行。
 - 验证成功后，补丁仍只保存在产物目录的隔离 `workspace/` 中，不会自动提交或应用回原仓库。
 - 模型连续三次重复同一工具调用，或在 diff 不变时重复相同失败，会由无进展检测器终止。
+- `--max-tokens` 限制一次任务累计模型 Token；超过后不会继续执行该轮提出的工具调用。
 
 运行产物写入 `artifacts/runs/<run-id>/`，每个任务包含：
 

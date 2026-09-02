@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from amor.benchmarks import BenchmarkLayout
+from amor.context import ContextStrategy
 from amor.domain import (
     AgentPhase,
     RunLimits,
@@ -39,6 +40,8 @@ def run_repository_task(
     provider: ModelProvider,
     artifacts_root: Path,
     limits: RunLimits,
+    context_strategy: ContextStrategy | str = ContextStrategy.SEARCH_FIRST,
+    context_budget_chars: int = 40_000,
 ) -> RunReport:
     repository = repository.resolve()
     profile = RepositoryProfiler().profile(repository)
@@ -85,6 +88,8 @@ def run_repository_task(
         provider,
         tools,
         trace,
+        context_strategy=context_strategy,
+        context_budget_chars=context_budget_chars,
     )
     state = orchestrator.run_until_final_verification()
 

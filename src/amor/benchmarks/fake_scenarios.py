@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from amor.context import ContextStrategy
 from amor.domain import TaskSpec
 from amor.providers import FakeModelProvider, ModelToolCall, ModelTurn
 
 
-def build_fake_provider(task: TaskSpec) -> FakeModelProvider:
+def build_fake_provider(
+    task: TaskSpec,
+    context_strategy: ContextStrategy | str = ContextStrategy.SEARCH_FIRST,
+) -> FakeModelProvider:
     scenarios = {
         "py_utils_average_empty": _average_turns,
         "py_utils_port_range": _port_turns,
@@ -15,7 +19,15 @@ def build_fake_provider(task: TaskSpec) -> FakeModelProvider:
     factory = scenarios.get(task.task_id)
     if factory is None:
         raise KeyError(f"no fake provider scenario for {task.task_id}")
-    return FakeModelProvider(factory(task))
+    turns = factory(task)
+    if ContextStrategy(context_strategy) == ContextStrategy.BROAD:
+        turns = [
+            turns[0],
+            _turn(101, "list_files", {"path": ".", "max_depth": 4}),
+            _turn(102, "read_file", {"path": "README.md", "start_line": 1, "end_line": 200}),
+            *turns[1:],
+        ]
+    return FakeModelProvider(turns)
 
 
 def _turn(number: int, name: str, arguments: dict) -> ModelTurn:

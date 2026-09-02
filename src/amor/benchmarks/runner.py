@@ -11,6 +11,7 @@ from amor.benchmarks.fake_scenarios import build_fake_provider
 from amor.benchmarks.loader import BenchmarkLayout, list_task_ids, load_task
 from amor.benchmarks.metrics import calculate_metrics
 from amor.benchmarks.models import BenchmarkAttemptRecord, BenchmarkRunSummary
+from amor.context import ContextStrategy
 from amor.domain import (
     AgentPhase,
     RunReport,
@@ -19,7 +20,7 @@ from amor.domain import (
     VerificationCheck,
     VerificationResult,
 )
-from amor.orchestrator import ModelDrivenOrchestrator, ScriptedOrchestrator
+from amor.orchestrator import PROMPT_VERSION, ModelDrivenOrchestrator, ScriptedOrchestrator
 from amor.policy import PolicyEngine
 from amor.profiler import RepositoryProfiler
 from amor.providers import ModelProvider
@@ -42,6 +43,12 @@ def run_benchmark(
     repeats: int,
     selected_task_ids: list[str] | None = None,
     provider_factory: ProviderFactory | None = None,
+    context_strategy: ContextStrategy | str = ContextStrategy.SEARCH_FIRST,
+    context_budget_chars: int = 40_000,
+    run_id_override: str | None = None,
+    model_max_output_tokens: int = 4_000,
+    input_cost_per_million: float | None = None,
+    output_cost_per_million: float | None = None,
 ) -> BenchmarkRunSummary:
     if provider_name not in SUPPORTED_PROVIDERS:
         raise ValueError(f"unsupported benchmark provider: {provider_name}")
@@ -49,6 +56,18 @@ def run_benchmark(
         raise ValueError("repeats must be between 1 and 20")
     if provider_name == "openai-responses" and provider_factory is None:
         raise ValueError("openai-responses benchmark requires a provider factory")
+    strategy = ContextStrategy(context_strategy)
+    if context_budget_chars < 1_000:
+        raise ValueError("context budget must be at least 1000 characters")
+    if model_max_output_tokens < 1:
+        raise ValueError("model max output tokens must be positive")
+    if (input_cost_per_million is None) != (output_cost_per_million is None):
+        raise ValueError("input and output token prices must be provided together")
+    if any(
+        price is not None and price < 0
+        for price in (input_cost_per_million, output_cost_per_million)
+    ):
+        raise ValueError("token prices cannot be negative")
 
     layout = BenchmarkLayout(project_root.resolve() / "benchmarks")
     available = set(list_task_ids(layout))
@@ -57,7 +76,13 @@ def run_benchmark(
     if unknown:
         raise ValueError(f"unknown benchmark tasks: {', '.join(unknown)}")
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    if run_id_override is not None and (
+        not run_id_override or Path(run_id_override).name != run_id_override
+    ):
+        raise ValueError("run id override must be a non-empty path segment")
+    run_id = run_id_override or (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    )
     started_at = datetime.now(timezone.utc)
     run_root = artifacts_root.resolve() / run_id
     run_root.mkdir(parents=True, exist_ok=False)
@@ -67,6 +92,12 @@ def run_benchmark(
             "run_id": run_id,
             "provider": provider_name,
             "model": model,
+            "context_strategy": strategy.value,
+            "context_budget_chars": context_budget_chars,
+            "prompt_version": PROMPT_VERSION,
+            "model_max_output_tokens": model_max_output_tokens,
+            "input_cost_per_million": input_cost_per_million,
+            "output_cost_per_million": output_cost_per_million,
             "repeats": repeats,
             "task_ids": task_ids,
             "started_at": started_at.isoformat(),
@@ -87,6 +118,10 @@ def run_benchmark(
                     attempt_dir=attempt_dir,
                     provider_name=provider_name,
                     provider_factory=provider_factory,
+                    context_strategy=strategy,
+                    context_budget_chars=context_budget_chars,
+                    input_cost_per_million=input_cost_per_million,
+                    output_cost_per_million=output_cost_per_million,
                 )
             )
 
@@ -95,6 +130,12 @@ def run_benchmark(
         run_id=run_id,
         provider=provider_name,
         model=model,
+        context_strategy=strategy.value,
+        context_budget_chars=context_budget_chars,
+        prompt_version=PROMPT_VERSION,
+        model_max_output_tokens=model_max_output_tokens,
+        input_cost_per_million=input_cost_per_million,
+        output_cost_per_million=output_cost_per_million,
         repeats=repeats,
         task_ids=task_ids,
         started_at=started_at,
@@ -125,6 +166,10 @@ def _run_attempt(
     attempt_dir: Path,
     provider_name: str,
     provider_factory: ProviderFactory | None,
+    context_strategy: ContextStrategy,
+    context_budget_chars: int,
+    input_cost_per_million: float | None,
+    output_cost_per_million: float | None,
 ) -> BenchmarkAttemptRecord:
     started_at = datetime.now(timezone.utc)
     started_monotonic = time.perf_counter()
@@ -148,7 +193,7 @@ def _run_attempt(
         orchestrator = ScriptedOrchestrator(task, tools, trace)
     else:
         if provider_name == "fake":
-            provider = build_fake_provider(task)
+            provider = build_fake_provider(task, context_strategy)
         else:
             assert provider_factory is not None
             provider = provider_factory(task, attempt_number)
@@ -159,6 +204,8 @@ def _run_attempt(
             provider,
             tools,
             trace,
+            context_strategy=context_strategy,
+            context_budget_chars=context_budget_chars,
         )
 
     state = orchestrator.run_until_final_verification()
@@ -227,6 +274,25 @@ def _run_attempt(
         for event in trace_events
     )
     no_progress = any(event.get("event_type") == "no_progress_detected" for event in trace_events)
+    context_events = [
+        event.get("payload", {})
+        for event in trace_events
+        if event.get("event_type") == "context_evidence"
+    ]
+    successful_reads = [
+        event for event in context_events
+        if event.get("tool") == "read_file" and event.get("successful")
+    ]
+    unique_read_paths = {
+        event["path"] for event in successful_reads if event.get("path")
+    }
+    search_events = [event for event in context_events if event.get("tool") == "search_code"]
+    modified_files_read = len(set(state.modified_files) & unique_read_paths)
+    context_relevance_rate = (
+        round(modified_files_read / len(unique_read_paths), 4)
+        if unique_read_paths
+        else 0.0
+    )
     failure_category = None if outcome_matches else _failure_category(
         final_status,
         verification,
@@ -239,6 +305,7 @@ def _run_attempt(
         difficulty=task.difficulty,
         expected_status=task.expected_status,
         actual_status=final_status,
+        context_strategy=context_strategy.value,
         outcome_matches_expected=outcome_matches,
         verifier_passed=verification.passed,
         agent_requested_verification=agent_requested_verification,
@@ -251,6 +318,23 @@ def _run_attempt(
         input_tokens=state.token_usage.get("input_tokens", 0),
         output_tokens=state.token_usage.get("output_tokens", 0),
         total_tokens=state.token_usage.get("total_tokens", 0),
+        estimated_cost_usd=_estimated_cost(
+            state.token_usage.get("input_tokens", 0),
+            state.token_usage.get("output_tokens", 0),
+            input_cost_per_million,
+            output_cost_per_million,
+        ),
+        files_read=len(successful_reads),
+        unique_files_read=len(unique_read_paths),
+        lines_read=sum(int(event.get("lines_read", 0)) for event in successful_reads),
+        repeated_reads=sum(bool(event.get("repeated")) for event in successful_reads),
+        search_calls=len(search_events),
+        zero_result_searches=sum(bool(event.get("zero_result")) for event in search_events),
+        context_requested_chars=sum(int(event.get("requested_chars", 0)) for event in context_events),
+        context_retained_chars=sum(int(event.get("retained_chars", 0)) for event in context_events),
+        context_compressions=sum(bool(event.get("compressed")) for event in context_events),
+        modified_files_read=modified_files_read,
+        context_relevance_rate=context_relevance_rate,
         duration_ms=int((time.perf_counter() - started_monotonic) * 1000),
         failure_category=failure_category,
         report_path=str(report_path.resolve()),
@@ -307,6 +391,20 @@ def _failure_category(
 
 def _read_trace(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _estimated_cost(
+    input_tokens: int,
+    output_tokens: int,
+    input_cost_per_million: float | None,
+    output_cost_per_million: float | None,
+) -> float | None:
+    if input_cost_per_million is None or output_cost_per_million is None:
+        return None
+    return round(
+        (input_tokens * input_cost_per_million + output_tokens * output_cost_per_million) / 1_000_000,
+        8,
+    )
 
 
 def _write_json(path: Path, value: object) -> None:

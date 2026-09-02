@@ -50,7 +50,12 @@ def test_parses_responses_function_calls_and_preserves_call_id(monkeypatch) -> N
         )
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    provider = OpenAIResponsesProvider(model="test-model", api_key="secret-key", timeout_seconds=17)
+    provider = OpenAIResponsesProvider(
+        model="test-model",
+        api_key="secret-key",
+        timeout_seconds=17,
+        max_output_tokens=321,
+    )
 
     turn = provider.respond(
         instructions="system",
@@ -66,5 +71,6 @@ def test_parses_responses_function_calls_and_preserves_call_id(monkeypatch) -> N
     request_body = json.loads(captured["request"].data.decode("utf-8"))
     assert request_body["previous_response_id"] == "resp_prior"
     assert request_body["parallel_tool_calls"] is False
+    assert request_body["max_output_tokens"] == 321
+    assert request_body["instructions"] == "system"
     assert captured["timeout"] == 17
-

@@ -77,6 +77,10 @@ def test_model_driven_run_edits_only_isolated_worktree(tmp_path: Path) -> None:
     assert report.state.token_usage == {"input_tokens": 70, "output_tokens": 35, "total_tokens": 105}
     assert provider.requests[1]["previous_response_id"] == "resp_1"
     assert provider.requests[1]["input_data"][0]["call_id"] == "call_1"
+    assert all("Stable task: average([]) must return 0.0" in request["instructions"] for request in provider.requests)
+    assert all("search_code before read_file" in request["instructions"] for request in provider.requests)
+    assert '"event_type": "context_evidence"' in trace
+    assert report.state.context_usage["retained_chars"] > 0
 
 
 def test_model_driven_run_blocks_repeated_identical_searches(tmp_path: Path) -> None:
@@ -112,3 +116,37 @@ def test_model_driven_run_blocks_repeated_identical_searches(tmp_path: Path) -> 
     assert report.final_status == TerminalStatus.BLOCKED
     assert "identical tool call repeated 3 times" in (report.state.latest_error_summary or "")
     assert '"event_type": "no_progress_detected"' in Path(report.trace_path).read_text(encoding="utf-8")
+
+
+def test_model_driven_run_stops_before_tools_when_token_budget_is_exceeded(tmp_path: Path) -> None:
+    layout = BenchmarkLayout(project_root() / "benchmarks")
+    fixture_workspace = WorkspaceManager().create_from_fixture(
+        layout.fixtures / "python_utils",
+        tmp_path / "repository-fixture",
+    )
+    provider = FakeModelProvider(
+        [
+            call(1, "update_plan", {"steps": ["search", "patch", "test"], "reason": "initial plan"}),
+            call(2, "search_code", {"query": "average", "path": "src"}),
+        ]
+    )
+
+    report = run_repository_task(
+        project_root=project_root(),
+        repository=fixture_workspace.source_repository,
+        instruction="fix average",
+        acceptance_criteria=["tests pass"],
+        allowed_paths=["src/**"],
+        validation_commands=[[sys.executable, "-m", "unittest", "tests.test_calculator", "-v"]],
+        provider_name="fake",
+        model="fake-model",
+        provider=provider,
+        artifacts_root=tmp_path / "local-runs",
+        limits=RunLimits(max_rounds=8, max_seconds=120, max_total_tokens=20),
+    )
+
+    assert report.final_status == TerminalStatus.BUDGET_EXHAUSTED
+    assert report.state.token_usage["total_tokens"] == 30
+    trace = Path(report.trace_path).read_text(encoding="utf-8")
+    assert '"event_type": "budget_exhausted"' in trace
+    assert '"tool": "search_code"' not in trace

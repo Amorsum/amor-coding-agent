@@ -59,7 +59,11 @@ class WorkspaceManager:
             raise WorkspaceError(f"run directory is not empty: {run_dir}")
 
         run_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(fixture_dir, source_repository)
+        shutil.copytree(
+            fixture_dir,
+            source_repository,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"),
+        )
         _run_git(["init", "-b", "main"], source_repository)
         _run_git(["config", "user.name", "AMOR Fixture Builder"], source_repository)
         _run_git(["config", "user.email", "amor@example.invalid"], source_repository)
