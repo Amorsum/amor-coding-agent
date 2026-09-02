@@ -1,5 +1,6 @@
 {
   "py_utils_average_empty": "average_empty",
-  "py_utils_port_range": "port_range"
+  "py_utils_port_range": "port_range",
+  "py_utils_order_discount": "order_discount",
+  "py_utils_retry_type": "retry_type"
 }
-

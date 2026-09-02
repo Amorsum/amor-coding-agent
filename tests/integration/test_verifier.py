@@ -13,7 +13,12 @@ def project_root() -> Path:
 
 @pytest.mark.parametrize(
     "task_id",
-    ["py_utils_average_empty", "py_utils_port_range"],
+    [
+        "py_utils_average_empty",
+        "py_utils_port_range",
+        "py_utils_order_discount",
+        "py_utils_retry_type",
+    ],
 )
 def test_verifier_rejects_unmodified_buggy_baseline(tmp_path: Path, task_id: str) -> None:
     layout = BenchmarkLayout(project_root() / "benchmarks")

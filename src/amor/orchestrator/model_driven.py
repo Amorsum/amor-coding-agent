@@ -13,6 +13,7 @@ from amor.domain import (
     ToolResult,
 )
 from amor.orchestrator.state_machine import StateMachine
+from amor.orchestrator.progress import ProgressGuard
 from amor.providers import ModelProvider, ProviderError
 from amor.providers.tool_schemas import function_tools
 from amor.tools import ToolRegistry
@@ -39,6 +40,7 @@ class ModelDrivenOrchestrator:
         self.plan_was_updated = False
         self.diff_was_reviewed = False
         self.last_diff_nonempty = False
+        self.progress_guard = ProgressGuard()
         self._started_monotonic = time.monotonic()
 
     def run_until_final_verification(self) -> AgentState:
@@ -91,6 +93,10 @@ class ModelDrivenOrchestrator:
 
             tool_outputs: list[dict[str, Any]] = []
             for call in turn.tool_calls:
+                no_progress_reason = self.progress_guard.observe_call(call.name, call.arguments)
+                if no_progress_reason:
+                    self._stop_for_no_progress(no_progress_reason)
+                    return self.state
                 if call.name != "update_plan" and not self.plan_was_updated:
                     result = ToolResult(ok=False, summary="update_plan must be called before execution tools")
                 elif call.name == "submit_for_verification":
@@ -103,6 +109,14 @@ class ModelDrivenOrchestrator:
                     )
                 else:
                     result = self._dispatch(call.name, call.arguments)
+                no_progress_reason = self.progress_guard.observe_result(
+                    call.name,
+                    result,
+                    self.tools.workspace.diff(),
+                )
+                if no_progress_reason:
+                    self._stop_for_no_progress(no_progress_reason)
+                    return self.state
                 tool_outputs.append(
                     {
                         "type": "function_call_output",
@@ -125,9 +139,12 @@ class ModelDrivenOrchestrator:
                 return self.tools.search_code(arguments["query"], arguments["path"])
             if name == "read_file":
                 self._ensure_exploring("model requested local source evidence")
-                return self.tools.read_file(
+                result = self.tools.read_file(
                     arguments["path"], arguments["start_line"], arguments["end_line"]
                 )
+                if result.ok and arguments["path"] not in self.state.relevant_files:
+                    self.state.relevant_files.append(arguments["path"])
+                return result
             if name == "apply_patch":
                 if self.state.phase != AgentPhase.EDITING:
                     self._transition(AgentPhase.EDITING, "model proposed a scoped patch")
@@ -190,6 +207,11 @@ class ModelDrivenOrchestrator:
     def _transition(self, phase: AgentPhase, reason: str) -> None:
         self.machine.transition(phase, reason)
         self.tools.phase = phase
+
+    def _stop_for_no_progress(self, reason: str) -> None:
+        self.state.latest_error_summary = reason
+        self.trace.record("no_progress_detected", self.state.phase, {"reason": reason})
+        self._transition(AgentPhase.BLOCKED, reason)
 
     def _initial_prompt(self) -> str:
         return (

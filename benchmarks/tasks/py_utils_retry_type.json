@@ -1,0 +1,24 @@
+{
+  "task_id": "py_utils_retry_type",
+  "fixture": "python_utils",
+  "category": "type_configuration",
+  "difficulty": "easy",
+  "expected_status": "SUCCEEDED",
+  "instruction": "retry_delays 的默认重试次数配置类型错误，导致默认调用抛出 TypeError。修复配置类型并保持显式整数参数行为。",
+  "acceptance_criteria": [
+    "默认调用返回三个重试位置",
+    "显式整数重试次数仍然生效",
+    "只修改 src/retry.py"
+  ],
+  "allowed_paths": ["src/retry.py"],
+  "visible_validation_commands": [
+    ["{python}", "-m", "unittest", "tests.test_retry", "-v"]
+  ],
+  "limits": {
+    "max_rounds": 10,
+    "max_seconds": 120,
+    "max_output_chars": 20000,
+    "max_file_bytes": 256000
+  }
+}
+

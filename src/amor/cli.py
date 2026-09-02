@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from amor.domain import RunLimits
+from amor.benchmarks.runner import SUPPORTED_PROVIDERS, run_benchmark
 from amor.local_runner import run_repository_task
 from amor.profiler import RepositoryProfiler
 from amor.providers import OpenAIResponsesProvider, ProviderError
@@ -43,6 +44,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm-send-code",
         action="store_true",
         help="confirm that selected repository snippets may be sent to the configured model provider",
+    )
+
+    benchmark = subparsers.add_parser("benchmark", help="run fixed tasks and produce reproducible metrics")
+    benchmark.add_argument("--provider", choices=SUPPORTED_PROVIDERS, default="fake")
+    benchmark.add_argument("--model", help="exact Responses API model id; required for openai-responses")
+    benchmark.add_argument("--task-id", action="append", help="benchmark task id; may be repeated")
+    benchmark.add_argument("--repeat", type=int, default=1)
+    benchmark.add_argument("--base-url", help="Responses-compatible API base URL")
+    benchmark.add_argument("--artifacts", type=Path, default=Path("artifacts/benchmarks"))
+    benchmark.add_argument(
+        "--confirm-send-code",
+        action="store_true",
+        help="confirm benchmark fixture snippets may be sent to the configured model provider",
     )
     return parser
 
@@ -102,6 +116,50 @@ def main() -> int:
         print(f"  workspace: {report.workspace_path}")
         print(f"  report: {Path(report.trace_path).parent / 'final-report.json'}")
         return 0 if report.verification.passed else 1
+    if arguments.command == "benchmark":
+        provider_factory = None
+        benchmark_model = arguments.model
+        if arguments.provider == "openai-responses":
+            if not arguments.confirm_send_code:
+                raise SystemExit("refusing API benchmark without --confirm-send-code")
+            if not benchmark_model:
+                raise SystemExit("--model is required for openai-responses")
+            try:
+                api_provider = OpenAIResponsesProvider.from_environment(
+                    model=benchmark_model,
+                    base_url=arguments.base_url,
+                )
+            except ProviderError as exc:
+                raise SystemExit(str(exc)) from exc
+            provider_factory = lambda task, attempt: api_provider
+        elif benchmark_model is None:
+            benchmark_model = "fake-model" if arguments.provider == "fake" else None
+
+        project_root = Path.cwd().resolve()
+        artifacts = arguments.artifacts
+        if not artifacts.is_absolute():
+            artifacts = project_root / artifacts
+        try:
+            summary = run_benchmark(
+                project_root=project_root,
+                artifacts_root=artifacts,
+                provider_name=arguments.provider,
+                model=benchmark_model,
+                repeats=arguments.repeat,
+                selected_task_ids=arguments.task_id,
+                provider_factory=provider_factory,
+            )
+        except (RuntimeError, ValueError, WorkspaceError) as exc:
+            raise SystemExit(str(exc)) from exc
+        run_root = artifacts.resolve() / summary.run_id
+        print(f"benchmark {summary.run_id}: {'PASSED' if summary.passed else 'FAILED'}")
+        print(
+            f"  attempts: {summary.metrics.successful_attempts}/{summary.metrics.attempt_count} "
+            f"({summary.metrics.attempt_success_rate:.1%})"
+        )
+        print(f"  total tokens: {summary.metrics.total_tokens}")
+        print(f"  summary: {run_root / 'summary.json'}")
+        return 0 if summary.passed else 1
     return 2
 
 

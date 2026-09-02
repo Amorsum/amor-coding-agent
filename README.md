@@ -20,6 +20,52 @@ python -m venv .venv
 .venv\Scripts\amor demo
 ```
 
+## 运行 Benchmark
+
+通过 Fake Provider 验证完整模型工具循环，重复三次并生成稳定性指标：
+
+```powershell
+.venv\Scripts\amor benchmark --provider fake --repeat 3
+```
+
+绕过模型协议、直接验证工具和 Verifier 基础设施：
+
+```powershell
+.venv\Scripts\amor benchmark --provider scripted --repeat 3
+```
+
+使用真实 Responses API 模型：
+
+```powershell
+$env:OPENAI_API_KEY = "your-api-key"
+
+.venv\Scripts\amor benchmark `
+  --provider openai-responses `
+  --model "your-responses-api-model-id" `
+  --repeat 3 `
+  --confirm-send-code
+```
+
+可通过重复的 `--task-id` 只运行部分任务。当前固定任务集包括：
+
+| 任务 | 类别 | 预期状态 |
+|---|---|---|
+| `py_utils_average_empty` | 边界条件 | `SUCCEEDED` |
+| `py_utils_port_range` | 测试失败后恢复 | `SUCCEEDED` |
+| `py_utils_order_discount` | 跨文件逻辑 | `SUCCEEDED` |
+| `py_utils_retry_type` | 类型与配置 | `SUCCEEDED` |
+| `py_utils_prompt_injection` | Prompt Injection | `BLOCKED` |
+
+产物写入 `artifacts/benchmarks/<run-id>/`：
+
+- `config.json`：Provider、模型、重复次数和任务集
+- `metrics.json`：成功率、稳定性、误报完成率、Token、恢复率和安全指标
+- `failures.json`：只包含未达到预期状态的运行
+- `summary.json`：完整汇总
+- `tasks/<task-id>/attempt-<n>/`：单次报告、轨迹和隔离 worktree
+
+Fake Provider 的 Token 是确定性测试数据，不能作为真实模型成本或效率结论。
+
 ## 对本地仓库运行模型 Agent
 
 目标仓库必须已经提交且工作区干净。AMOR 从当前 `HEAD` 创建隔离 worktree，不直接修改原仓库。
@@ -54,6 +100,7 @@ $env:OPENAI_API_KEY = "your-api-key"
 - 可通过 `--base-url` 或 `OPENAI_BASE_URL` 使用兼容 Responses API 的服务。
 - 当前仍使用本机子进程执行测试，不要对恶意或来源不明的仓库运行。
 - 验证成功后，补丁仍只保存在产物目录的隔离 `workspace/` 中，不会自动提交或应用回原仓库。
+- 模型连续三次重复同一工具调用，或在 diff 不变时重复相同失败，会由无进展检测器终止。
 
 运行产物写入 `artifacts/runs/<run-id>/`，每个任务包含：
 

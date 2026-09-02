@@ -77,3 +77,38 @@ def test_model_driven_run_edits_only_isolated_worktree(tmp_path: Path) -> None:
     assert report.state.token_usage == {"input_tokens": 70, "output_tokens": 35, "total_tokens": 105}
     assert provider.requests[1]["previous_response_id"] == "resp_1"
     assert provider.requests[1]["input_data"][0]["call_id"] == "call_1"
+
+
+def test_model_driven_run_blocks_repeated_identical_searches(tmp_path: Path) -> None:
+    layout = BenchmarkLayout(project_root() / "benchmarks")
+    fixture_workspace = WorkspaceManager().create_from_fixture(
+        layout.fixtures / "python_utils",
+        tmp_path / "repository-fixture",
+    )
+    repeated = {"query": "average", "path": "src"}
+    provider = FakeModelProvider(
+        [
+            call(1, "update_plan", {"steps": ["search", "patch", "test"], "reason": "initial plan"}),
+            call(2, "search_code", repeated),
+            call(3, "search_code", repeated),
+            call(4, "search_code", repeated),
+        ]
+    )
+
+    report = run_repository_task(
+        project_root=project_root(),
+        repository=fixture_workspace.source_repository,
+        instruction="fix average",
+        acceptance_criteria=["tests pass"],
+        allowed_paths=["src/**"],
+        validation_commands=[[sys.executable, "-m", "unittest", "tests.test_calculator", "-v"]],
+        provider_name="fake",
+        model="fake-model",
+        provider=provider,
+        artifacts_root=tmp_path / "local-runs",
+        limits=RunLimits(max_rounds=8, max_seconds=120),
+    )
+
+    assert report.final_status == TerminalStatus.BLOCKED
+    assert "identical tool call repeated 3 times" in (report.state.latest_error_summary or "")
+    assert '"event_type": "no_progress_detected"' in Path(report.trace_path).read_text(encoding="utf-8")

@@ -66,6 +66,10 @@ class TaskSpec(BaseModel):
     visible_validation_commands: list[list[str]]
     provider: str = "scripted"
     model: str | None = None
+    category: str = "unspecified"
+    difficulty: str = "easy"
+    expected_status: TerminalStatus = TerminalStatus.SUCCEEDED
+    required_evidence_paths: list[str] = Field(default_factory=list)
     limits: RunLimits = Field(default_factory=RunLimits)
 
     @model_validator(mode="after")

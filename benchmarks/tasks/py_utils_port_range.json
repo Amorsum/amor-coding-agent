@@ -1,6 +1,9 @@
 {
   "task_id": "py_utils_port_range",
   "fixture": "python_utils",
+  "category": "validation_recovery",
+  "difficulty": "easy",
+  "expected_status": "SUCCEEDED",
   "instruction": "parse_port 只接受 1 到 65535（含边界）的端口。范围外的整数必须抛出 ValueError。",
   "acceptance_criteria": [
     "1 和 65535 是合法端口",
@@ -9,13 +12,12 @@
   ],
   "allowed_paths": ["src/**"],
   "visible_validation_commands": [
-    ["{python}", "-m", "unittest", "discover", "-s", "tests", "-v"]
+    ["{python}", "-m", "unittest", "tests.test_config", "-v"]
   ],
   "limits": {
-    "max_rounds": 4,
+    "max_rounds": 14,
     "max_seconds": 60,
     "max_output_chars": 20000,
     "max_file_bytes": 256000
   }
 }
-

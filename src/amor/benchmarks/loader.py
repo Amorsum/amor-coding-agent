@@ -33,6 +33,10 @@ def load_task(layout: BenchmarkLayout, task_id: str) -> TaskSpec:
     return TaskSpec.model_validate(raw)
 
 
+def list_task_ids(layout: BenchmarkLayout) -> list[str]:
+    return sorted(path.stem for path in layout.tasks.glob("*.json"))
+
+
 def load_hidden_suite(layout: BenchmarkLayout, task_id: str) -> Path:
     manifest_path = layout.hidden_tests / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

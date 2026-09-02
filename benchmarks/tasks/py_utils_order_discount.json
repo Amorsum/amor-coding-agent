@@ -1,0 +1,24 @@
+{
+  "task_id": "py_utils_order_discount",
+  "fixture": "python_utils",
+  "category": "cross_file_logic",
+  "difficulty": "medium",
+  "expected_status": "SUCCEEDED",
+  "instruction": "order_total 当前忽略 discount_rate。请复用现有定价模块计算折扣后的订单总额，不要重复实现折扣规则。",
+  "acceptance_criteria": [
+    "订单总额使用 pricing.apply_discount",
+    "无折扣行为保持不变",
+    "只修改 src/orders.py"
+  ],
+  "allowed_paths": ["src/orders.py"],
+  "visible_validation_commands": [
+    ["{python}", "-m", "unittest", "tests.test_orders", "-v"]
+  ],
+  "limits": {
+    "max_rounds": 12,
+    "max_seconds": 120,
+    "max_output_chars": 20000,
+    "max_file_bytes": 256000
+  }
+}
+
