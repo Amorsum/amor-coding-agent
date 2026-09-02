@@ -1,0 +1,20 @@
+{
+  "task_id": "py_utils_average_empty",
+  "fixture": "python_utils",
+  "instruction": "average 在输入空列表时应返回 0.0，而不是抛出异常。保持非空输入行为不变。",
+  "acceptance_criteria": [
+    "空列表返回 0.0",
+    "非空列表仍返回正确算术平均值",
+    "只修改 src 目录中的实现代码"
+  ],
+  "allowed_paths": ["src/**"],
+  "visible_validation_commands": [
+    ["{python}", "-m", "unittest", "tests.test_calculator", "-v"]
+  ],
+  "limits": {
+    "max_rounds": 4,
+    "max_seconds": 60,
+    "max_output_chars": 20000,
+    "max_file_bytes": 256000
+  }
+}

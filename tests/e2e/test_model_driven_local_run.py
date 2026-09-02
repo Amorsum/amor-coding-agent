@@ -1,0 +1,79 @@
+import sys
+from pathlib import Path
+
+from amor.benchmarks import BenchmarkLayout
+from amor.domain import RunLimits, TerminalStatus
+from amor.local_runner import run_repository_task
+from amor.providers import FakeModelProvider, ModelToolCall, ModelTurn
+from amor.workspace import WorkspaceManager
+
+
+def project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def call(turn: int, name: str, arguments: dict) -> ModelTurn:
+    return ModelTurn(
+        response_id=f"resp_{turn}",
+        tool_calls=[ModelToolCall(call_id=f"call_{turn}", name=name, arguments=arguments)],
+        usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    )
+
+
+def test_model_driven_run_edits_only_isolated_worktree(tmp_path: Path) -> None:
+    layout = BenchmarkLayout(project_root() / "benchmarks")
+    fixture_workspace = WorkspaceManager().create_from_fixture(
+        layout.fixtures / "python_utils",
+        tmp_path / "repository-fixture",
+    )
+    source_repository = fixture_workspace.source_repository
+    original = (source_repository / "src/calculator.py").read_text(encoding="utf-8")
+    provider = FakeModelProvider(
+        [
+            call(1, "update_plan", {"steps": ["find average", "patch empty input", "test and review"], "reason": "initial plan"}),
+            call(2, "search_code", {"query": "def average", "path": "src"}),
+            call(3, "read_file", {"path": "src/calculator.py", "start_line": 1, "end_line": 80}),
+            call(
+                4,
+                "apply_patch",
+                {
+                    "path": "src/calculator.py",
+                    "expected_text": "    return sum(values) / len(values)\n",
+                    "replacement_text": "    if not values:\n        return 0.0\n    return sum(values) / len(values)\n",
+                },
+            ),
+            call(
+                5,
+                "run_validation",
+                {"command": [sys.executable, "-m", "unittest", "tests.test_calculator", "-v"]},
+            ),
+            call(6, "get_git_diff", {}),
+            call(7, "submit_for_verification", {"summary": "tests pass and diff is minimal"}),
+        ]
+    )
+
+    report = run_repository_task(
+        project_root=project_root(),
+        repository=source_repository,
+        instruction="average([]) must return 0.0",
+        acceptance_criteria=["empty input returns 0.0", "existing tests pass"],
+        allowed_paths=["src/**"],
+        validation_commands=[[sys.executable, "-m", "unittest", "tests.test_calculator", "-v"]],
+        provider_name="fake",
+        model="fake-model",
+        provider=provider,
+        artifacts_root=tmp_path / "local-runs",
+        limits=RunLimits(max_rounds=10, max_seconds=120),
+    )
+
+    assert report.final_status == TerminalStatus.SUCCEEDED
+    assert report.verification.passed
+    assert "if not values" in report.git_diff
+    assert (source_repository / "src/calculator.py").read_text(encoding="utf-8") == original
+    trace = Path(report.trace_path).read_text(encoding="utf-8")
+    assert '"event_type": "model_turn"' in trace
+    assert '"to": "FINAL_VERIFYING"' in trace
+    assert len(provider.requests) == 7
+    assert report.state.token_usage == {"input_tokens": 70, "output_tokens": 35, "total_tokens": 105}
+    assert provider.requests[1]["previous_response_id"] == "resp_1"
+    assert provider.requests[1]["input_data"][0]["call_id"] == "call_1"
