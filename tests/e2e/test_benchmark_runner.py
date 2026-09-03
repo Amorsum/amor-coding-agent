@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from amor.benchmarks.runner import run_benchmark
+from amor.benchmarks.fake_scenarios import build_fake_provider
 from amor.domain import TerminalStatus
 
 
@@ -78,3 +79,28 @@ def test_benchmark_repeat_reports_stability(tmp_path: Path) -> None:
     assert summary.metrics.attempt_count == 3
     assert summary.metrics.stable_tasks == 1
     assert summary.metrics.stable_task_rate == 1.0
+
+
+def test_api_provider_factory_creates_an_isolated_session_per_attempt(tmp_path: Path) -> None:
+    providers = []
+
+    def provider_factory(task, attempt):
+        provider = build_fake_provider(task, "search-first")
+        providers.append(provider)
+        return provider
+
+    summary = run_benchmark(
+        project_root=project_root(),
+        artifacts_root=tmp_path / "benchmarks",
+        provider_name="deepseek-responses",
+        model="deepseek-v4-pro",
+        repeats=2,
+        selected_task_ids=["py_utils_average_empty"],
+        provider_factory=provider_factory,
+        max_total_tokens=5_000,
+    )
+
+    assert summary.passed
+    assert len(providers) == 2
+    assert providers[0] is not providers[1]
+    assert summary.max_total_tokens == 5_000

@@ -10,7 +10,7 @@ from amor.benchmarks.runner import SUPPORTED_PROVIDERS, run_benchmark
 from amor.context import SUPPORTED_CONTEXT_STRATEGIES, ContextStrategy
 from amor.local_runner import run_repository_task
 from amor.profiler import RepositoryProfiler
-from amor.providers import OpenAIResponsesProvider, ProviderError
+from amor.providers import DeepSeekResponsesProvider, ModelProvider, OpenAIResponsesProvider, ProviderError
 from amor.runner import DEFAULT_TASK_IDS, run_demo
 from amor.workspace.manager import WorkspaceError
 
@@ -37,7 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help='approved argv JSON array, e.g. ["python","-m","pytest"]',
     )
-    run.add_argument("--model", required=True, help="exact Responses API model id")
+    run.add_argument(
+        "--provider",
+        choices=("openai-responses", "deepseek-responses"),
+        default="openai-responses",
+    )
+    run.add_argument("--model", required=True, help="exact provider model id")
     run.add_argument("--base-url", help="Responses-compatible API base URL")
     run.add_argument("--artifacts", type=Path, default=Path("artifacts/runs"))
     run.add_argument("--max-rounds", type=int, default=20)
@@ -54,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     benchmark = subparsers.add_parser("benchmark", help="run fixed tasks and produce reproducible metrics")
     benchmark.add_argument("--provider", choices=SUPPORTED_PROVIDERS, default="fake")
-    benchmark.add_argument("--model", help="exact Responses API model id; required for openai-responses")
+    benchmark.add_argument("--model", help="exact provider model id; required for API providers")
     benchmark.add_argument("--task-id", action="append", help="benchmark task id; may be repeated")
     benchmark.add_argument("--repeat", type=int, default=1)
     benchmark.add_argument("--base-url", help="Responses-compatible API base URL")
@@ -62,7 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--strategy", choices=SUPPORTED_CONTEXT_STRATEGIES, default=ContextStrategy.SEARCH_FIRST.value)
     benchmark.add_argument("--context-budget-chars", type=int, default=40_000)
     benchmark.add_argument("--max-output-tokens", type=int, default=4_000)
+    benchmark.add_argument("--max-tokens", type=int, help="override each task's total model-token budget")
+    benchmark.add_argument("--cost-currency", help="pricing currency recorded in artifacts, e.g. USD or CNY")
     benchmark.add_argument("--input-cost-per-million", type=float)
+    benchmark.add_argument("--cached-input-cost-per-million", type=float)
     benchmark.add_argument("--output-cost-per-million", type=float)
     benchmark.add_argument(
         "--confirm-send-code",
@@ -71,8 +79,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     experiment = subparsers.add_parser("experiment", help="compare two context strategies on fixed tasks")
-    experiment.add_argument("--provider", choices=("fake", "openai-responses"), default="fake")
-    experiment.add_argument("--model", help="exact Responses API model id; required for openai-responses")
+    experiment.add_argument(
+        "--provider",
+        choices=("fake", "openai-responses", "deepseek-responses"),
+        default="fake",
+    )
+    experiment.add_argument("--model", help="exact provider model id; required for API providers")
     experiment.add_argument("--task-id", action="append", help="benchmark task id; may be repeated")
     experiment.add_argument("--repeat", type=int, default=3)
     experiment.add_argument("--base-url", help="Responses-compatible API base URL")
@@ -85,7 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     experiment.add_argument("--context-budget-chars", type=int, default=40_000)
     experiment.add_argument("--max-output-tokens", type=int, default=4_000)
+    experiment.add_argument("--max-tokens", type=int, help="override each task's total model-token budget")
+    experiment.add_argument("--cost-currency", help="pricing currency recorded in artifacts, e.g. USD or CNY")
     experiment.add_argument("--input-cost-per-million", type=float)
+    experiment.add_argument("--cached-input-cost-per-million", type=float)
     experiment.add_argument("--output-cost-per-million", type=float)
     experiment.add_argument(
         "--confirm-send-code",
@@ -119,7 +134,8 @@ def main() -> int:
             raise SystemExit("refusing API run without --confirm-send-code")
         try:
             validation_commands = [_parse_command_json(value) for value in arguments.validation_json]
-            provider = OpenAIResponsesProvider.from_environment(
+            provider = _build_api_provider(
+                arguments.provider,
                 model=arguments.model,
                 base_url=arguments.base_url,
                 timeout_seconds=arguments.max_seconds,
@@ -139,7 +155,7 @@ def main() -> int:
                 acceptance_criteria=arguments.accept,
                 allowed_paths=arguments.allow,
                 validation_commands=validation_commands,
-                provider_name="openai-responses",
+                provider_name=arguments.provider,
                 model=arguments.model,
                 provider=provider,
                 artifacts_root=artifacts,
@@ -160,20 +176,26 @@ def main() -> int:
     if arguments.command == "benchmark":
         provider_factory = None
         benchmark_model = arguments.model
-        if arguments.provider == "openai-responses":
+        if arguments.provider in ("openai-responses", "deepseek-responses"):
             if not arguments.confirm_send_code:
                 raise SystemExit("refusing API benchmark without --confirm-send-code")
             if not benchmark_model:
-                raise SystemExit("--model is required for openai-responses")
+                raise SystemExit(f"--model is required for {arguments.provider}")
             try:
-                api_provider = OpenAIResponsesProvider.from_environment(
+                _build_api_provider(
+                    arguments.provider,
                     model=benchmark_model,
                     base_url=arguments.base_url,
                     max_output_tokens=arguments.max_output_tokens,
                 )
             except ProviderError as exc:
                 raise SystemExit(str(exc)) from exc
-            provider_factory = lambda task, attempt: api_provider
+            provider_factory = lambda task, attempt: _build_api_provider(
+                arguments.provider,
+                model=benchmark_model,
+                base_url=arguments.base_url,
+                max_output_tokens=arguments.max_output_tokens,
+            )
         elif benchmark_model is None:
             benchmark_model = "fake-model" if arguments.provider == "fake" else None
 
@@ -193,7 +215,10 @@ def main() -> int:
                 context_strategy=arguments.strategy,
                 context_budget_chars=arguments.context_budget_chars,
                 model_max_output_tokens=arguments.max_output_tokens,
+                max_total_tokens=arguments.max_tokens,
+                cost_currency=_resolved_cost_currency(arguments),
                 input_cost_per_million=arguments.input_cost_per_million,
+                cached_input_cost_per_million=arguments.cached_input_cost_per_million,
                 output_cost_per_million=arguments.output_cost_per_million,
             )
         except (RuntimeError, ValueError, WorkspaceError) as exc:
@@ -210,20 +235,26 @@ def main() -> int:
     if arguments.command == "experiment":
         provider_factory = None
         experiment_model = arguments.model
-        if arguments.provider == "openai-responses":
+        if arguments.provider in ("openai-responses", "deepseek-responses"):
             if not arguments.confirm_send_code:
                 raise SystemExit("refusing API experiment without --confirm-send-code")
             if not experiment_model:
-                raise SystemExit("--model is required for openai-responses")
+                raise SystemExit(f"--model is required for {arguments.provider}")
             try:
-                api_provider = OpenAIResponsesProvider.from_environment(
+                _build_api_provider(
+                    arguments.provider,
                     model=experiment_model,
                     base_url=arguments.base_url,
                     max_output_tokens=arguments.max_output_tokens,
                 )
             except ProviderError as exc:
                 raise SystemExit(str(exc)) from exc
-            provider_factory = lambda task, attempt: api_provider
+            provider_factory = lambda task, attempt: _build_api_provider(
+                arguments.provider,
+                model=experiment_model,
+                base_url=arguments.base_url,
+                max_output_tokens=arguments.max_output_tokens,
+            )
         elif experiment_model is None:
             experiment_model = "fake-model"
 
@@ -247,7 +278,10 @@ def main() -> int:
                 provider_factory=provider_factory,
                 context_budget_chars=arguments.context_budget_chars,
                 model_max_output_tokens=arguments.max_output_tokens,
+                max_total_tokens=arguments.max_tokens,
+                cost_currency=_resolved_cost_currency(arguments),
                 input_cost_per_million=arguments.input_cost_per_million,
+                cached_input_cost_per_million=arguments.cached_input_cost_per_million,
                 output_cost_per_million=arguments.output_cost_per_million,
             )
         except (RuntimeError, ValueError, WorkspaceError) as exc:
@@ -271,6 +305,44 @@ def _parse_command_json(value: str) -> list[str]:
     if not isinstance(parsed, list) or not parsed or not all(isinstance(item, str) and item for item in parsed):
         raise ValueError("each --validation-json value must be a non-empty JSON array of strings")
     return parsed
+
+
+def _build_api_provider(
+    provider_name: str,
+    *,
+    model: str,
+    base_url: str | None,
+    timeout_seconds: int = 120,
+    max_output_tokens: int,
+) -> ModelProvider:
+    provider_class = {
+        "openai-responses": OpenAIResponsesProvider,
+        "deepseek-responses": DeepSeekResponsesProvider,
+    }.get(provider_name)
+    if provider_class is None:
+        raise ProviderError(f"unsupported API provider: {provider_name}")
+    return provider_class.from_environment(
+        model=model,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        max_output_tokens=max_output_tokens,
+    )
+
+
+def _resolved_cost_currency(arguments: argparse.Namespace) -> str | None:
+    has_pricing = any(
+        value is not None
+        for value in (
+            arguments.input_cost_per_million,
+            arguments.cached_input_cost_per_million,
+            arguments.output_cost_per_million,
+        )
+    )
+    if not has_pricing:
+        return arguments.cost_currency
+    if arguments.cost_currency:
+        return arguments.cost_currency
+    return "CNY" if arguments.provider == "deepseek-responses" else "USD"
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import urllib.error
@@ -10,22 +11,22 @@ from amor.providers.base import ModelTurn, ProviderError
 from amor.providers.responses_common import parse_responses_turn
 
 
-class OpenAIResponsesProvider:
-    """Small Responses API client with no SDK dependency and no credential logging."""
+class DeepSeekResponsesProvider:
+    """Stateless DeepSeek Responses client that replays complete local history."""
 
     def __init__(
         self,
         *,
         model: str,
         api_key: str,
-        base_url: str = "https://api.openai.com/v1",
+        base_url: str = "https://api.deepseek.com",
         timeout_seconds: int = 120,
         max_output_tokens: int = 4_000,
     ) -> None:
         if not model.strip():
             raise ProviderError("model is required")
         if not api_key.strip():
-            raise ProviderError("OPENAI_API_KEY is required")
+            raise ProviderError("DEEPSEEK_API_KEY is required")
         if max_output_tokens < 1:
             raise ProviderError("max_output_tokens must be positive")
         self.model = model
@@ -33,6 +34,7 @@ class OpenAIResponsesProvider:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.max_output_tokens = max_output_tokens
+        self._history: list[dict[str, Any]] = []
 
     @classmethod
     def from_environment(
@@ -42,11 +44,11 @@ class OpenAIResponsesProvider:
         base_url: str | None = None,
         timeout_seconds: int = 120,
         max_output_tokens: int = 4_000,
-    ) -> "OpenAIResponsesProvider":
+    ) -> "DeepSeekResponsesProvider":
         return cls(
             model=model,
-            api_key=os.environ.get("OPENAI_API_KEY", ""),
-            base_url=base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url=base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             timeout_seconds=timeout_seconds,
             max_output_tokens=max_output_tokens,
         )
@@ -59,19 +61,26 @@ class OpenAIResponsesProvider:
         tools: list[dict[str, Any]],
         previous_response_id: str | None,
     ) -> ModelTurn:
+        del previous_response_id  # DeepSeek Responses is stateless.
+        if isinstance(input_data, str):
+            if self._history:
+                raise ProviderError(
+                    "DeepSeek provider session already started; create a fresh provider for each run"
+                )
+            pending_input = [{"role": "user", "content": input_data}]
+        else:
+            pending_input = copy.deepcopy(input_data)
+
+        request_history = [*self._history, *pending_input]
+
         payload: dict[str, Any] = {
             "model": self.model,
             "instructions": instructions,
-            "input": input_data,
+            "input": request_history,
             "tools": tools,
             "tool_choice": "auto",
-            "parallel_tool_calls": False,
             "max_output_tokens": self.max_output_tokens,
-            "store": True,
         }
-        if previous_response_id:
-            payload["previous_response_id"] = previous_response_id
-
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/responses",
@@ -87,8 +96,13 @@ class OpenAIResponsesProvider:
                 raw = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:2_000]
-            raise ProviderError(f"Responses API returned HTTP {exc.code}: {detail}") from exc
+            raise ProviderError(f"DeepSeek Responses API returned HTTP {exc.code}: {detail}") from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise ProviderError(f"Responses API request failed: {exc}") from exc
+            raise ProviderError(f"DeepSeek Responses API request failed: {exc}") from exc
 
-        return parse_responses_turn(raw)
+        turn = parse_responses_turn(raw)
+        self._history = request_history
+        output = raw.get("output")
+        if isinstance(output, list):
+            self._history.extend(copy.deepcopy(item) for item in output if isinstance(item, dict))
+        return turn

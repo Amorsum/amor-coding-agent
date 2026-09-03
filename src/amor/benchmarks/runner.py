@@ -31,7 +31,8 @@ from amor.workspace import WorkspaceManager
 
 
 ProviderFactory = Callable[[TaskSpec, int], ModelProvider]
-SUPPORTED_PROVIDERS = ("scripted", "fake", "openai-responses")
+SUPPORTED_PROVIDERS = ("scripted", "fake", "openai-responses", "deepseek-responses")
+API_PROVIDERS = ("openai-responses", "deepseek-responses")
 
 
 def run_benchmark(
@@ -47,27 +48,42 @@ def run_benchmark(
     context_budget_chars: int = 40_000,
     run_id_override: str | None = None,
     model_max_output_tokens: int = 4_000,
+    max_total_tokens: int | None = None,
+    cost_currency: str | None = None,
     input_cost_per_million: float | None = None,
+    cached_input_cost_per_million: float | None = None,
     output_cost_per_million: float | None = None,
 ) -> BenchmarkRunSummary:
     if provider_name not in SUPPORTED_PROVIDERS:
         raise ValueError(f"unsupported benchmark provider: {provider_name}")
     if repeats < 1 or repeats > 20:
         raise ValueError("repeats must be between 1 and 20")
-    if provider_name == "openai-responses" and provider_factory is None:
-        raise ValueError("openai-responses benchmark requires a provider factory")
+    if provider_name in API_PROVIDERS and provider_factory is None:
+        raise ValueError(f"{provider_name} benchmark requires a provider factory")
     strategy = ContextStrategy(context_strategy)
     if context_budget_chars < 1_000:
         raise ValueError("context budget must be at least 1000 characters")
     if model_max_output_tokens < 1:
         raise ValueError("model max output tokens must be positive")
+    if max_total_tokens is not None and max_total_tokens < 1:
+        raise ValueError("max total tokens must be positive")
     if (input_cost_per_million is None) != (output_cost_per_million is None):
         raise ValueError("input and output token prices must be provided together")
+    prices_configured = input_cost_per_million is not None
+    if prices_configured != bool(cost_currency and cost_currency.strip()):
+        raise ValueError("cost currency and input/output token prices must be provided together")
+    if cached_input_cost_per_million is not None and not prices_configured:
+        raise ValueError("cached input token price requires input and output token prices")
     if any(
         price is not None and price < 0
-        for price in (input_cost_per_million, output_cost_per_million)
+        for price in (
+            input_cost_per_million,
+            cached_input_cost_per_million,
+            output_cost_per_million,
+        )
     ):
         raise ValueError("token prices cannot be negative")
+    normalized_currency = cost_currency.strip().upper() if cost_currency else None
 
     layout = BenchmarkLayout(project_root.resolve() / "benchmarks")
     available = set(list_task_ids(layout))
@@ -96,7 +112,10 @@ def run_benchmark(
             "context_budget_chars": context_budget_chars,
             "prompt_version": PROMPT_VERSION,
             "model_max_output_tokens": model_max_output_tokens,
+            "max_total_tokens": max_total_tokens,
+            "cost_currency": normalized_currency,
             "input_cost_per_million": input_cost_per_million,
+            "cached_input_cost_per_million": cached_input_cost_per_million,
             "output_cost_per_million": output_cost_per_million,
             "repeats": repeats,
             "task_ids": task_ids,
@@ -107,6 +126,14 @@ def run_benchmark(
     attempts: list[BenchmarkAttemptRecord] = []
     for task_id in task_ids:
         task = load_task(layout, task_id)
+        if max_total_tokens is not None:
+            task = task.model_copy(
+                update={
+                    "limits": task.limits.model_copy(
+                        update={"max_total_tokens": max_total_tokens}
+                    )
+                }
+            )
         for attempt_number in range(1, repeats + 1):
             attempt_dir = run_root / "tasks" / task_id / f"attempt-{attempt_number:02d}"
             attempts.append(
@@ -121,6 +148,7 @@ def run_benchmark(
                     context_strategy=strategy,
                     context_budget_chars=context_budget_chars,
                     input_cost_per_million=input_cost_per_million,
+                    cached_input_cost_per_million=cached_input_cost_per_million,
                     output_cost_per_million=output_cost_per_million,
                 )
             )
@@ -134,7 +162,10 @@ def run_benchmark(
         context_budget_chars=context_budget_chars,
         prompt_version=PROMPT_VERSION,
         model_max_output_tokens=model_max_output_tokens,
+        max_total_tokens=max_total_tokens,
+        cost_currency=normalized_currency,
         input_cost_per_million=input_cost_per_million,
+        cached_input_cost_per_million=cached_input_cost_per_million,
         output_cost_per_million=output_cost_per_million,
         repeats=repeats,
         task_ids=task_ids,
@@ -169,6 +200,7 @@ def _run_attempt(
     context_strategy: ContextStrategy,
     context_budget_chars: int,
     input_cost_per_million: float | None,
+    cached_input_cost_per_million: float | None,
     output_cost_per_million: float | None,
 ) -> BenchmarkAttemptRecord:
     started_at = datetime.now(timezone.utc)
@@ -316,12 +348,16 @@ def _run_attempt(
         tool_calls=model_requested_calls if provider_name != "scripted" else len(tool_events),
         denied_tool_calls=denied_calls,
         input_tokens=state.token_usage.get("input_tokens", 0),
+        cached_input_tokens=state.token_usage.get("cached_input_tokens", 0),
         output_tokens=state.token_usage.get("output_tokens", 0),
+        reasoning_tokens=state.token_usage.get("reasoning_tokens", 0),
         total_tokens=state.token_usage.get("total_tokens", 0),
-        estimated_cost_usd=_estimated_cost(
+        estimated_cost=_estimated_cost(
             state.token_usage.get("input_tokens", 0),
+            state.token_usage.get("cached_input_tokens", 0),
             state.token_usage.get("output_tokens", 0),
             input_cost_per_million,
+            cached_input_cost_per_million,
             output_cost_per_million,
         ),
         files_read=len(successful_reads),
@@ -395,14 +431,28 @@ def _read_trace(path: Path) -> list[dict]:
 
 def _estimated_cost(
     input_tokens: int,
+    cached_input_tokens: int,
     output_tokens: int,
     input_cost_per_million: float | None,
+    cached_input_cost_per_million: float | None,
     output_cost_per_million: float | None,
 ) -> float | None:
     if input_cost_per_million is None or output_cost_per_million is None:
         return None
+    billable_cached_tokens = min(max(cached_input_tokens, 0), input_tokens)
+    uncached_input_tokens = input_tokens - billable_cached_tokens
+    cached_rate = (
+        cached_input_cost_per_million
+        if cached_input_cost_per_million is not None
+        else input_cost_per_million
+    )
     return round(
-        (input_tokens * input_cost_per_million + output_tokens * output_cost_per_million) / 1_000_000,
+        (
+            uncached_input_tokens * input_cost_per_million
+            + billable_cached_tokens * cached_rate
+            + output_tokens * output_cost_per_million
+        )
+        / 1_000_000,
         8,
     )
 

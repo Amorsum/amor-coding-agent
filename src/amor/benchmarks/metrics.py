@@ -32,7 +32,7 @@ def calculate_metrics(attempts: list[BenchmarkAttemptRecord], task_ids: list[str
     search_calls = sum(attempt.search_calls for attempt in attempts)
     requested_chars = sum(attempt.context_requested_chars for attempt in attempts)
     retained_chars = sum(attempt.context_retained_chars for attempt in attempts)
-    costs = [attempt.estimated_cost_usd for attempt in attempts]
+    costs = [attempt.estimated_cost for attempt in attempts]
     total_cost = (
         round(sum(cost for cost in costs if cost is not None), 8)
         if costs and all(cost is not None for cost in costs)
@@ -61,10 +61,12 @@ def calculate_metrics(attempts: list[BenchmarkAttemptRecord], task_ids: list[str
         average_tool_calls=_average([attempt.tool_calls for attempt in attempts]),
         average_duration_ms=_average([attempt.duration_ms for attempt in attempts]),
         total_input_tokens=sum(attempt.input_tokens for attempt in attempts),
+        total_cached_input_tokens=sum(attempt.cached_input_tokens for attempt in attempts),
         total_output_tokens=sum(attempt.output_tokens for attempt in attempts),
+        total_reasoning_tokens=sum(attempt.reasoning_tokens for attempt in attempts),
         total_tokens=sum(attempt.total_tokens for attempt in attempts),
-        total_estimated_cost_usd=total_cost,
-        cost_per_success_usd=(
+        total_estimated_cost=total_cost,
+        cost_per_success=(
             round(total_cost / len(successes), 8)
             if total_cost is not None and successes
             else None

@@ -27,14 +27,17 @@ def run_strategy_experiment(
     provider_factory: ProviderFactory | None = None,
     context_budget_chars: int = 40_000,
     model_max_output_tokens: int = 4_000,
+    max_total_tokens: int | None = None,
+    cost_currency: str | None = None,
     input_cost_per_million: float | None = None,
+    cached_input_cost_per_million: float | None = None,
     output_cost_per_million: float | None = None,
 ) -> StrategyExperimentSummary:
     normalized = [ContextStrategy(strategy) for strategy in strategies]
     if len(normalized) != 2 or len(set(normalized)) != 2:
         raise ValueError("strategy experiment requires exactly two distinct strategies")
     if provider_name == "scripted":
-        raise ValueError("strategy experiment requires fake or openai-responses provider")
+        raise ValueError("strategy experiment requires fake or an API provider")
 
     experiment_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     started_at = datetime.now(timezone.utc)
@@ -54,7 +57,10 @@ def run_strategy_experiment(
             context_budget_chars=context_budget_chars,
             run_id_override=strategy.value,
             model_max_output_tokens=model_max_output_tokens,
+            max_total_tokens=max_total_tokens,
+            cost_currency=cost_currency,
             input_cost_per_million=input_cost_per_million,
+            cached_input_cost_per_million=cached_input_cost_per_million,
             output_cost_per_million=output_cost_per_million,
         )
         summaries.append(summary)
@@ -94,11 +100,11 @@ def run_strategy_experiment(
         ),
         estimated_cost_reduction_rate=(
             _reduction(
-                baseline.metrics.total_estimated_cost_usd,
-                candidate.metrics.total_estimated_cost_usd,
+                baseline.metrics.total_estimated_cost,
+                candidate.metrics.total_estimated_cost,
             )
-            if baseline.metrics.total_estimated_cost_usd is not None
-            and candidate.metrics.total_estimated_cost_usd is not None
+            if baseline.metrics.total_estimated_cost is not None
+            and candidate.metrics.total_estimated_cost is not None
             else None
         ),
     )
@@ -111,7 +117,10 @@ def run_strategy_experiment(
         context_budget_chars=context_budget_chars,
         prompt_version=PROMPT_VERSION,
         model_max_output_tokens=model_max_output_tokens,
+        max_total_tokens=max_total_tokens,
+        cost_currency=baseline.cost_currency,
         input_cost_per_million=input_cost_per_million,
+        cached_input_cost_per_million=cached_input_cost_per_million,
         output_cost_per_million=output_cost_per_million,
         started_at=started_at,
         finished_at=datetime.now(timezone.utc),

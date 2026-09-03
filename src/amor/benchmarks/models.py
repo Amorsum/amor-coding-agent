@@ -25,9 +25,11 @@ class BenchmarkAttemptRecord(BaseModel):
     tool_calls: int
     denied_tool_calls: int
     input_tokens: int
+    cached_input_tokens: int
     output_tokens: int
+    reasoning_tokens: int
     total_tokens: int
-    estimated_cost_usd: float | None = None
+    estimated_cost: float | None = None
     files_read: int
     unique_files_read: int
     lines_read: int
@@ -67,10 +69,12 @@ class BenchmarkMetrics(BaseModel):
     average_tool_calls: float
     average_duration_ms: float
     total_input_tokens: int
+    total_cached_input_tokens: int
     total_output_tokens: int
+    total_reasoning_tokens: int
     total_tokens: int
-    total_estimated_cost_usd: float | None = None
-    cost_per_success_usd: float | None = None
+    total_estimated_cost: float | None = None
+    cost_per_success: float | None = None
     average_files_read: float
     average_lines_read: float
     repeated_read_rate: float
@@ -91,7 +95,10 @@ class BenchmarkRunSummary(BaseModel):
     context_budget_chars: int
     prompt_version: str
     model_max_output_tokens: int
+    max_total_tokens: int | None = None
+    cost_currency: str | None = None
     input_cost_per_million: float | None = None
+    cached_input_cost_per_million: float | None = None
     output_cost_per_million: float | None = None
     repeats: int
     task_ids: list[str]
@@ -130,7 +137,10 @@ class StrategyExperimentSummary(BaseModel):
     context_budget_chars: int
     prompt_version: str
     model_max_output_tokens: int
+    max_total_tokens: int | None = None
+    cost_currency: str | None = None
     input_cost_per_million: float | None = None
+    cached_input_cost_per_million: float | None = None
     output_cost_per_million: float | None = None
     started_at: datetime
     finished_at: datetime

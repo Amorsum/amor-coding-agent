@@ -45,7 +45,13 @@ def test_parses_responses_function_calls_and_preserves_call_id(monkeypatch) -> N
                         "content": [{"type": "output_text", "text": "Searching relevant code."}],
                     },
                 ],
-                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "input_tokens_details": {"cached_tokens": 4},
+                    "output_tokens_details": {"reasoning_tokens": 2},
+                },
             }
         )
 
@@ -68,6 +74,13 @@ def test_parses_responses_function_calls_and_preserves_call_id(monkeypatch) -> N
     assert turn.tool_calls[0].call_id == "call_123"
     assert turn.tool_calls[0].arguments == {"query": "average", "path": "src"}
     assert turn.output_text == "Searching relevant code."
+    assert turn.usage == {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "cached_input_tokens": 4,
+        "reasoning_tokens": 2,
+    }
     request_body = json.loads(captured["request"].data.decode("utf-8"))
     assert request_body["previous_response_id"] == "resp_prior"
     assert request_body["parallel_tool_calls"] is False

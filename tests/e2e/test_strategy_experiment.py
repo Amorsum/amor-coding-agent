@@ -17,7 +17,9 @@ def test_fake_experiment_compares_broad_and_search_first_context(tmp_path: Path)
         repeats=1,
         strategies=["broad", "search-first"],
         selected_task_ids=["py_utils_order_discount"],
+        cost_currency="USD",
         input_cost_per_million=1.0,
+        cached_input_cost_per_million=0.25,
         output_cost_per_million=2.0,
     )
 
@@ -34,6 +36,8 @@ def test_fake_experiment_compares_broad_and_search_first_context(tmp_path: Path)
     document = json.loads(comparison_path.read_text(encoding="utf-8"))
     assert document["comparison"]["baseline_strategy"] == "broad"
     assert document["input_cost_per_million"] == 1.0
+    assert document["cached_input_cost_per_million"] == 0.25
+    assert document["cost_currency"] == "USD"
     assert len(document["variants"]) == 2
 
 
