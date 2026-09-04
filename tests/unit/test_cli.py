@@ -20,6 +20,7 @@ def test_run_accepts_deepseek_provider() -> None:
     )
 
     assert arguments.provider == "deepseek-responses"
+    assert arguments.max_verification_retries == 2
 
 
 def test_deepseek_pricing_defaults_to_cny() -> None:
@@ -36,3 +37,11 @@ def test_deepseek_pricing_defaults_to_cny() -> None:
     )
 
     assert _resolved_cost_currency(arguments) == "CNY"
+
+
+def test_web_defaults_to_local_only_host() -> None:
+    arguments = build_parser().parse_args(["web"])
+
+    assert arguments.host == "127.0.0.1"
+    assert arguments.port == 8765
+    assert str(arguments.artifacts) == "artifacts"

@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -116,6 +117,141 @@ def test_model_driven_run_blocks_repeated_identical_searches(tmp_path: Path) -> 
     assert report.final_status == TerminalStatus.BLOCKED
     assert "identical tool call repeated 3 times" in (report.state.latest_error_summary or "")
     assert '"event_type": "no_progress_detected"' in Path(report.trace_path).read_text(encoding="utf-8")
+
+
+def test_local_run_repairs_after_independent_verifier_rejection(tmp_path: Path) -> None:
+    layout = BenchmarkLayout(project_root() / "benchmarks")
+    fixture_workspace = WorkspaceManager().create_from_fixture(
+        layout.fixtures / "python_utils",
+        tmp_path / "repository-fixture",
+    )
+    validation = [sys.executable, "-c", "raise SystemExit(0)"]
+    provider = FakeModelProvider(
+        [
+            call(1, "update_plan", {"steps": ["inspect", "patch", "verify"], "reason": "initial plan"}),
+            call(2, "read_file", {"path": "src/calculator.py", "start_line": 1, "end_line": 40}),
+            call(
+                3,
+                "apply_patch",
+                {
+                    "path": "src/calculator.py",
+                    "expected_text": "    return sum(values) / len(values)\n",
+                    "replacement_text": "    return (\n",
+                },
+            ),
+            call(4, "run_validation", {"command": validation}),
+            call(5, "get_git_diff", {}),
+            call(6, "submit_for_verification", {"summary": "ready"}),
+            call(
+                7,
+                "apply_patch",
+                {
+                    "path": "src/calculator.py",
+                    "expected_text": "    return (\n",
+                    "replacement_text": (
+                        "    if not values:\n"
+                        "        return 0.0\n"
+                        "    return sum(values) / len(values)\n"
+                    ),
+                },
+            ),
+            call(8, "run_validation", {"command": validation}),
+            call(9, "get_git_diff", {}),
+            call(10, "submit_for_verification", {"summary": "repaired"}),
+        ]
+    )
+
+    report = run_repository_task(
+        project_root=project_root(),
+        repository=fixture_workspace.source_repository,
+        instruction="average([]) must return 0.0",
+        acceptance_criteria=["empty input returns 0.0"],
+        allowed_paths=["src/**"],
+        validation_commands=[validation],
+        provider_name="fake",
+        model="fake-model",
+        provider=provider,
+        artifacts_root=tmp_path / "local-runs",
+        limits=RunLimits(
+            max_rounds=12,
+            max_seconds=120,
+            max_verification_retries=1,
+        ),
+    )
+
+    assert report.final_status == TerminalStatus.SUCCEEDED
+    assert report.state.verification_attempts == 2
+    assert len(report.verification_history) == 2
+    assert report.verification_history[0].failure_category == "static_validation_failure"
+    assert report.verification_history[1].passed
+    assert "if not values" in report.git_diff
+    trace = Path(report.trace_path).read_text(encoding="utf-8")
+    assert '"event_type": "verification_feedback"' in trace
+    feedback = provider.requests[6]["input_data"][0]
+    assert feedback["call_id"] == "call_6"
+    assert "static_validation_failure" in feedback["output"]
+
+    contract_path = Path(report.trace_path).parent / "verification-contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    assert contract["baseline_commit"] == report.baseline_commit
+    assert contract["sources"]["acceptance_criteria"] == "user"
+    assert len(contract["contract_sha256"]) == 64
+
+
+def test_terminal_verification_is_allowed_after_final_turn_crosses_token_budget(
+    tmp_path: Path,
+) -> None:
+    layout = BenchmarkLayout(project_root() / "benchmarks")
+    fixture_workspace = WorkspaceManager().create_from_fixture(
+        layout.fixtures / "python_utils",
+        tmp_path / "repository-fixture",
+    )
+    validation = [sys.executable, "-m", "unittest", "tests.test_calculator", "-v"]
+    provider = FakeModelProvider(
+        [
+            call(1, "search_code", {"query": "def average", "path": "src"}),
+            call(2, "read_file", {"path": "src/calculator.py", "start_line": 1, "end_line": 40}),
+            call(
+                3,
+                "apply_patch",
+                {
+                    "path": "src/calculator.py",
+                    "expected_text": "    return sum(values) / len(values)\n",
+                    "replacement_text": (
+                        "    if not values:\n"
+                        "        return 0.0\n"
+                        "    return sum(values) / len(values)\n"
+                    ),
+                },
+            ),
+            call(4, "run_validation", {"command": validation}),
+            call(5, "get_git_diff", {}),
+            call(6, "submit_for_verification", {"summary": "ready"}),
+        ]
+    )
+
+    report = run_repository_task(
+        project_root=project_root(),
+        repository=fixture_workspace.source_repository,
+        instruction="average([]) must return 0.0",
+        acceptance_criteria=["empty input returns 0.0"],
+        allowed_paths=["src/**"],
+        validation_commands=[validation],
+        provider_name="fake",
+        model="fake-model",
+        provider=provider,
+        artifacts_root=tmp_path / "local-runs",
+        limits=RunLimits(max_rounds=8, max_seconds=120, max_total_tokens=80),
+        planning_strategy="direct",
+    )
+
+    assert report.final_status == TerminalStatus.SUCCEEDED
+    assert report.verification.passed
+    assert report.state.token_usage["total_tokens"] == 90
+    assert report.state.budget_overrun_tokens == 10
+    trace = Path(report.trace_path).read_text(encoding="utf-8")
+    assert '"event_type": "budget_overrun"' in trace
+    assert '"terminal_submission_allowed": true' in trace
 
 
 def test_model_driven_run_stops_before_tools_when_token_budget_is_exceeded(tmp_path: Path) -> None:

@@ -270,6 +270,7 @@ def _run_attempt(
     agent_requested_verification = state.phase == AgentPhase.FINAL_VERIFYING
     if task.expected_status == TerminalStatus.BLOCKED:
         verification = _verify_expected_block(task, state.phase, workspace.diff(), state.relevant_files)
+        state.verification_attempts = 1
         trace.record("verification", state.phase, verification)
         if state.phase == AgentPhase.FINAL_VERIFYING:
             orchestrator.machine.transition(AgentPhase.FAILED, "task should have stopped safely instead of requesting completion")
@@ -278,6 +279,7 @@ def _run_attempt(
             final_status = TerminalStatus(state.phase.value)
     elif state.phase == AgentPhase.FINAL_VERIFYING:
         verification = IndependentVerifier(layout).verify(task, workspace)
+        state.verification_attempts = 1
         trace.record("verification", AgentPhase.FINAL_VERIFYING, verification)
         terminal_phase = AgentPhase.SUCCEEDED if verification.passed else AgentPhase.FAILED
         orchestrator.machine.transition(
@@ -307,6 +309,7 @@ def _run_attempt(
         final_status=final_status,
         state=state,
         verification=verification,
+        verification_history=[verification] if state.verification_attempts else [],
         git_diff=diff,
         trace_path=str(trace_path.resolve()),
         workspace_path=str(workspace.root.resolve()),

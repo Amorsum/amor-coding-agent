@@ -1,0 +1,176 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark *));
+@custom-variant data-active {
+  &:where([data-state="active"]),
+  &:where([data-active]:not([data-active="false"])) { @slot; }
+}
+@custom-variant data-horizontal {
+  &:where([data-orientation="horizontal"]) { @slot; }
+}
+@custom-variant data-vertical {
+  &:where([data-orientation="vertical"]) { @slot; }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --font-sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --font-heading: var(--font-sans);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+}
+
+:root,
+.dark {
+  --background: oklch(0.135 0.018 248);
+  --foreground: oklch(0.95 0.012 218);
+  --card: oklch(0.175 0.021 247);
+  --card-foreground: oklch(0.95 0.012 218);
+  --popover: oklch(0.19 0.022 247);
+  --popover-foreground: oklch(0.95 0.012 218);
+  --primary: oklch(0.84 0.12 197);
+  --primary-foreground: oklch(0.14 0.02 245);
+  --secondary: oklch(0.24 0.025 245);
+  --secondary-foreground: oklch(0.9 0.015 220);
+  --muted: oklch(0.22 0.02 247);
+  --muted-foreground: oklch(0.67 0.025 230);
+  --accent: oklch(0.25 0.035 230);
+  --accent-foreground: oklch(0.95 0.012 218);
+  --destructive: oklch(0.67 0.19 24);
+  --border: oklch(0.31 0.025 240);
+  --input: oklch(0.27 0.025 242);
+  --ring: oklch(0.78 0.12 198);
+  --radius: 0.55rem;
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html { @apply bg-background font-sans; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    background-image:
+      linear-gradient(rgb(103 232 249 / 0.018) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(103 232 249 / 0.018) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+  button { cursor: pointer; }
+  ::selection { background: rgb(103 232 249 / 0.22); }
+}
+
+.app-header {
+  @apply sticky top-0 z-30 flex h-[4.5rem] items-center justify-between border-b border-white/8 bg-[#101820]/92 px-4 backdrop-blur-xl sm:px-6;
+}
+
+.amor-mark {
+  @apply grid size-9 place-items-center rounded-md border border-cyan-300/35 bg-cyan-300/10 font-mono text-sm font-bold text-cyan-200;
+  box-shadow: inset 0 0 18px rgb(103 232 249 / 0.08), 0 0 24px rgb(103 232 249 / 0.08);
+}
+
+.workbench-grid {
+  @apply grid min-h-[calc(100vh-4.5rem)] grid-cols-1;
+  grid-template-areas: "rail" "analysis" "evidence";
+}
+
+.experiment-rail {
+  grid-area: rail;
+  @apply flex min-h-72 flex-col border-b border-white/8 bg-[#111a23]/82 p-4;
+}
+
+.analysis-pane {
+  grid-area: analysis;
+  @apply min-w-0 space-y-4 p-4 sm:p-6;
+}
+
+.evidence-pane {
+  grid-area: evidence;
+  @apply min-w-0 border-t border-white/8 bg-[#101820]/72;
+}
+
+@media (min-width: 1280px) {
+  .workbench-grid {
+    grid-template-areas: "rail analysis evidence";
+    grid-template-columns: 17rem minmax(38rem, 1fr) minmax(22rem, 27rem);
+  }
+  .experiment-rail { @apply sticky top-[4.5rem] h-[calc(100vh-4.5rem)] border-b-0 border-r; }
+  .analysis-pane { @apply min-h-[calc(100vh-4.5rem)]; }
+  .evidence-pane { @apply sticky top-[4.5rem] h-[calc(100vh-4.5rem)] border-l border-t-0; }
+}
+
+.section-kicker {
+  @apply mb-4 flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground;
+}
+
+.experiment-button {
+  @apply block w-full rounded-lg border border-transparent bg-white/[0.018] p-3.5 text-left transition hover:border-white/10 hover:bg-white/[0.04] focus-visible:ring-2 focus-visible:ring-cyan-300/45 focus-visible:outline-none;
+}
+
+.experiment-button[data-active="true"] {
+  @apply border-cyan-300/30 bg-cyan-300/[0.07];
+  box-shadow: inset 3px 0 0 rgb(103 232 249 / 0.85);
+}
+
+.rail-note {
+  @apply mt-4 flex gap-2 border-t border-white/7 pt-4 text-xs leading-relaxed text-muted-foreground;
+}
+
+.experiment-heading {
+  @apply flex flex-col justify-between gap-5 py-2 sm:flex-row sm:items-end;
+}
+
+.fingerprint-card {
+  @apply flex min-w-64 flex-col gap-1 rounded-lg border border-white/8 bg-black/15 px-3 py-2 font-mono;
+}
+
+.fingerprint-card span { @apply text-[0.63rem] tracking-[0.12em] text-muted-foreground; }
+.fingerprint-card code { @apply text-xs text-cyan-100; }
+
+.metric-card {
+  @apply border-white/8 bg-gradient-to-br from-white/[0.045] to-transparent py-4;
+}
+
+.evidence-section { @apply border-b border-white/7 py-5 last:border-b-0; }
+.evidence-section h3 { @apply mb-3 text-xs font-semibold uppercase tracking-[0.1em] text-muted-foreground; }
+.evidence-section > p { @apply text-sm leading-relaxed text-foreground/90; }
+
+.check-row { @apply flex gap-3 rounded-lg border border-white/7 bg-white/[0.02] p-3; }
+.check-icon { @apply grid size-6 shrink-0 place-items-center rounded-full; }
+.check-icon svg { @apply size-3.5; }
+.check-icon.pass { @apply bg-emerald-400/12 text-emerald-300; }
+.check-icon.fail { @apply bg-rose-400/12 text-rose-300; }
+
+.plan-row { @apply grid grid-cols-[1.5rem_1fr_auto] items-start gap-2 text-sm; }
+.plan-row > span { @apply pt-0.5 font-mono text-xs text-cyan-300; }
+.plan-row > p { @apply leading-relaxed text-foreground/85; }
+
+.trace-line { @apply relative mt-5 space-y-5 before:absolute before:inset-y-2 before:left-[0.3rem] before:w-px before:bg-white/10; }
+.trace-event { @apply relative grid grid-cols-[0.7rem_1fr] gap-3; }
+.trace-dot { @apply relative z-10 mt-1 size-2.5 rounded-full border-2 border-[#101820] bg-cyan-300; }
+.trace-event code { @apply font-mono text-xs text-cyan-100; }
+.trace-event p { @apply mt-2 text-xs leading-relaxed text-muted-foreground; }
+.trace-event time { @apply mt-1 block font-mono text-[0.68rem] text-muted-foreground/70; }
+
+.diff-block {
+  @apply mt-5 overflow-x-auto rounded-lg border border-white/8 bg-[#0a1118] p-4 font-mono text-xs leading-relaxed text-slate-300;
+  tab-size: 2;
+}

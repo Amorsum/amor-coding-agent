@@ -49,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-rounds", type=int, default=20)
     run.add_argument("--max-seconds", type=int, default=900)
     run.add_argument("--max-tokens", type=int, default=100_000)
+    run.add_argument(
+        "--max-verification-retries",
+        type=int,
+        default=2,
+        help="additional repair attempts after independent verification fails",
+    )
     run.add_argument("--max-output-tokens", type=int, default=4_000)
     run.add_argument("--strategy", choices=SUPPORTED_CONTEXT_STRATEGIES, default=ContextStrategy.SEARCH_FIRST.value)
     run.add_argument("--planning", choices=SUPPORTED_PLANNING_STRATEGIES, default=PlanningStrategy.STRUCTURED.value)
@@ -111,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="confirm benchmark fixture snippets may be sent to the configured model provider",
     )
+
+    web = subparsers.add_parser("web", help="serve the local read-only artifact dashboard")
+    web.add_argument("--artifacts", type=Path, default=Path("artifacts"))
+    web.add_argument("--frontend", type=Path, help="built dashboard directory")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8765)
     return parser
 
 
@@ -167,6 +179,7 @@ def main() -> int:
                     max_rounds=arguments.max_rounds,
                     max_seconds=arguments.max_seconds,
                     max_total_tokens=arguments.max_tokens,
+                    max_verification_retries=arguments.max_verification_retries,
                 ),
                 context_strategy=arguments.strategy,
                 context_budget_chars=arguments.context_budget_chars,
@@ -314,6 +327,18 @@ def main() -> int:
             print(f"  estimated-cost reduction: {comparison.estimated_cost_reduction_rate:.1%}")
         print(f"  comparison: {comparison_path}")
         print(f"  report: {comparison_path.parent / 'report.md'}")
+        return 0
+    if arguments.command == "web":
+        if arguments.port < 1 or arguments.port > 65535:
+            raise SystemExit("--port must be between 1 and 65535")
+        from amor.web import serve_dashboard
+
+        serve_dashboard(
+            artifacts_root=arguments.artifacts.resolve(),
+            frontend_root=arguments.frontend.resolve() if arguments.frontend else None,
+            host=arguments.host,
+            port=arguments.port,
+        )
         return 0
     return 2
 

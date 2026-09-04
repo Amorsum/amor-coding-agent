@@ -53,6 +53,7 @@ class RunLimits(BaseModel):
     max_output_chars: int = Field(default=20_000, ge=100, le=1_000_000)
     max_file_bytes: int = Field(default=256_000, ge=1, le=10_000_000)
     max_total_tokens: int = Field(default=100_000, ge=1, le=10_000_000)
+    max_verification_retries: int = Field(default=2, ge=0, le=10)
 
 
 class TaskSpec(BaseModel):
@@ -111,6 +112,8 @@ class AgentState(BaseModel):
     round: int = 0
     token_usage: dict[str, int] = Field(default_factory=dict)
     context_usage: dict[str, int] = Field(default_factory=dict)
+    verification_attempts: int = 0
+    budget_overrun_tokens: int = 0
     started_at: datetime = Field(default_factory=utc_now)
 
 
@@ -153,6 +156,7 @@ class RunReport(BaseModel):
     final_status: TerminalStatus
     state: AgentState
     verification: VerificationResult
+    verification_history: list[VerificationResult] = Field(default_factory=list)
     git_diff: str
     trace_path: str
     workspace_path: str

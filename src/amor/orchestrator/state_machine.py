@@ -46,7 +46,11 @@ ALLOWED_TRANSITIONS: dict[AgentPhase, set[AgentPhase]] = {
         AgentPhase.FAILED,
         AgentPhase.BUDGET_EXHAUSTED,
     },
-    AgentPhase.FINAL_VERIFYING: {AgentPhase.SUCCEEDED, AgentPhase.FAILED},
+    AgentPhase.FINAL_VERIFYING: {
+        AgentPhase.DIAGNOSING,
+        AgentPhase.SUCCEEDED,
+        AgentPhase.FAILED,
+    },
 }
 
 

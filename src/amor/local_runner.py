@@ -23,7 +23,7 @@ from amor.profiler import RepositoryProfiler
 from amor.providers import ModelProvider
 from amor.tools import ToolRegistry
 from amor.trace import TraceRecorder
-from amor.verifier import IndependentVerifier
+from amor.verifier import IndependentVerifier, build_verification_contract
 from amor.workspace import WorkspaceManager
 
 
@@ -51,6 +51,7 @@ def run_repository_task(
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     task_id = f"local_{uuid.uuid4().hex[:12]}"
+    acceptance_was_provided = bool(acceptance_criteria)
     task = TaskSpec(
         task_id=task_id,
         repository=str(repository),
@@ -64,8 +65,26 @@ def run_repository_task(
     )
     run_dir = artifacts_root.resolve() / run_id / task_id
     workspace = WorkspaceManager().create_from_repository(repository, run_dir)
+    contract = build_verification_contract(
+        task,
+        workspace.baseline_commit,
+        acceptance_source="user" if acceptance_was_provided else "validation-default",
+    )
+    (run_dir / "verification-contract.json").write_text(
+        json.dumps(contract, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     trace_path = run_dir / "trace.jsonl"
     trace = TraceRecorder(trace_path, task_id)
+    trace.record(
+        "verification_contract",
+        AgentPhase.INITIALIZING,
+        {
+            "contract_sha256": contract["contract_sha256"],
+            "sources": contract["sources"],
+        },
+    )
     profile_path = run_dir / "repository-profile.json"
     profile_path.write_text(
         json.dumps(profile.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
@@ -94,23 +113,32 @@ def run_repository_task(
         planning_strategy=planning_strategy,
     )
     state = orchestrator.run_until_final_verification()
+    verifier = IndependentVerifier(BenchmarkLayout(project_root / "benchmarks"))
+    verification_history: list[VerificationResult] = []
+    verification: VerificationResult | None = None
 
-    if state.phase == AgentPhase.FINAL_VERIFYING:
-        verifier = IndependentVerifier(BenchmarkLayout(project_root / "benchmarks"))
+    while state.phase == AgentPhase.FINAL_VERIFYING:
         verification = verifier.verify(task, workspace, include_hidden_tests=False)
+        verification_history.append(verification)
+        state.verification_attempts = len(verification_history)
         trace.record("verification", AgentPhase.FINAL_VERIFYING, verification)
-        terminal_phase = AgentPhase.SUCCEEDED if verification.passed else AgentPhase.FAILED
-        orchestrator.machine.transition(
-            terminal_phase,
-            "independent verifier passed" if verification.passed else "independent verifier rejected the patch",
-        )
         if verification.passed:
+            orchestrator.machine.transition(AgentPhase.SUCCEEDED, "independent verifier passed")
             for step in state.plan:
                 step.status = StepStatus.COMPLETED
-        elif state.plan:
+            break
+        if len(verification_history) <= task.limits.max_verification_retries:
+            state = orchestrator.continue_after_verification(verification)
+            continue
+        orchestrator.machine.transition(
+            AgentPhase.FAILED,
+            "independent verifier rejected the patch and retry limit was reached",
+        )
+        if state.plan:
             state.plan[-1].status = StepStatus.FAILED
-        final_status = TerminalStatus(terminal_phase.value)
-    else:
+        break
+
+    if verification is None:
         verification = VerificationResult(
             passed=False,
             checks=[
@@ -122,7 +150,7 @@ def run_repository_task(
             ],
             failure_category="agent_loop_failure",
         )
-        final_status = TerminalStatus(state.phase.value)
+    final_status = TerminalStatus(state.phase.value)
 
     report = RunReport(
         run_id=run_id,
@@ -131,6 +159,7 @@ def run_repository_task(
         final_status=final_status,
         state=state,
         verification=verification,
+        verification_history=verification_history,
         git_diff=workspace.diff(),
         trace_path=str(trace_path.resolve()),
         workspace_path=str(workspace.root.resolve()),

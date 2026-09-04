@@ -52,6 +52,7 @@ def run_demo(project_root: Path, artifacts_root: Path, task_ids: list[str] | Non
 
         if state.phase == AgentPhase.FINAL_VERIFYING:
             verification = IndependentVerifier(benchmark_layout).verify(task, workspace)
+            state.verification_attempts = 1
             trace.record("verification", AgentPhase.FINAL_VERIFYING, verification)
             terminal_phase = AgentPhase.SUCCEEDED if verification.passed else AgentPhase.FAILED
             orchestrator.machine.transition(
@@ -78,6 +79,7 @@ def run_demo(project_root: Path, artifacts_root: Path, task_ids: list[str] | Non
             final_status=final_status,
             state=state,
             verification=verification,
+            verification_history=[verification] if state.verification_attempts else [],
             git_diff=diff,
             trace_path=str(trace_path.resolve()),
             workspace_path=str(workspace.root.resolve()),
