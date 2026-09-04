@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from amor.acceptance import AcceptancePlan
 from amor.benchmarks import BenchmarkLayout
 from amor.context import ContextStrategy
 from amor.domain import (
@@ -43,6 +44,8 @@ def run_repository_task(
     context_strategy: ContextStrategy | str = ContextStrategy.SEARCH_FIRST,
     context_budget_chars: int = 40_000,
     planning_strategy: PlanningStrategy | str = PlanningStrategy.STRUCTURED,
+    acceptance_plan: AcceptancePlan | None = None,
+    acceptance_plan_path: Path | None = None,
 ) -> RunReport:
     repository = repository.resolve()
     profile = RepositoryProfiler().profile(repository)
@@ -63,12 +66,45 @@ def run_repository_task(
         model=model,
         limits=limits,
     )
+    if (acceptance_plan is None) != (acceptance_plan_path is None):
+        raise ValueError("acceptance plan and its source path must be provided together")
+    if acceptance_plan is not None:
+        if acceptance_plan.status != "READY":
+            raise ValueError("acceptance plan still requires user input")
+        if acceptance_plan.baseline_commit != profile.head_commit:
+            raise ValueError("acceptance plan baseline no longer matches repository HEAD")
+        if (
+            acceptance_plan.instruction != task.instruction
+            or acceptance_plan.acceptance_criteria != task.acceptance_criteria
+            or acceptance_plan.allowed_paths != task.allowed_paths
+            or acceptance_plan.validation_commands != task.visible_validation_commands
+        ):
+            raise ValueError("runtime task does not match the approved acceptance plan")
+        resolved_plan_path = acceptance_plan_path.resolve()
+    else:
+        resolved_plan_path = None
+
     run_dir = artifacts_root.resolve() / run_id / task_id
     workspace = WorkspaceManager().create_from_repository(repository, run_dir)
+    if acceptance_plan is not None and acceptance_plan.baseline_commit != workspace.baseline_commit:
+        raise ValueError("acceptance plan baseline changed while the run was starting")
+    if resolved_plan_path is not None:
+        try:
+            resolved_plan_path.relative_to(workspace.root.resolve())
+        except ValueError:
+            pass
+        else:
+            raise ValueError("acceptance plan must remain outside the execution workspace")
     contract = build_verification_contract(
         task,
         workspace.baseline_commit,
-        acceptance_source="user" if acceptance_was_provided else "validation-default",
+        acceptance_source=(
+            "approved-planner-contract"
+            if acceptance_plan is not None
+            else "user" if acceptance_was_provided else "validation-default"
+        ),
+        acceptance_plan_id=acceptance_plan.plan_id if acceptance_plan else None,
+        acceptance_plan_sha256=acceptance_plan.contract_sha256 if acceptance_plan else None,
     )
     (run_dir / "verification-contract.json").write_text(
         json.dumps(contract, ensure_ascii=False, indent=2) + "\n",
@@ -118,7 +154,12 @@ def run_repository_task(
     verification: VerificationResult | None = None
 
     while state.phase == AgentPhase.FINAL_VERIFYING:
-        verification = verifier.verify(task, workspace, include_hidden_tests=False)
+        verification = verifier.verify(
+            task,
+            workspace,
+            include_hidden_tests=False,
+            structured_plan_path=resolved_plan_path,
+        )
         verification_history.append(verification)
         state.verification_attempts = len(verification_history)
         trace.record("verification", AgentPhase.FINAL_VERIFYING, verification)

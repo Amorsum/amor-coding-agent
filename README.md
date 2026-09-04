@@ -2,13 +2,14 @@
 
 AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动的本地 Coding Agent。当前版本支持固定 Benchmark 演示，以及对干净的本地 Git 仓库运行自然语言修复任务。
 
-`v0.8.0` 新增真实项目的验证驱动修复闭环、不可变验收契约、验证历史，以及最终提交轮次的 Token 越限收尾机制。`v0.7.0` 的本地只读 Web 工作台继续用于浏览实验对比、任务 Attempt、Verifier 结果、状态轨迹和 Git Diff。
+`v0.9.0` 新增独立只读验收规划器：实现 Agent 动手前，使用独立模型会话阅读现有源码和测试，生成待用户审批的不可变验收契约。执行 Agent 不能看到或修改契约文件，独立 Verifier 在工作区外执行结构化用例，失败结果会进入现有修复闭环。
 
 ## 当前可运行链路
 
 ```text
-固定任务 → 创建隔离 Git worktree → 搜索/局部读取 → 应用补丁
-        → 运行可见测试 → 独立 Verifier → 失败反馈与有限修复
+用户任务 → 独立只读验收规划 → 用户审批并冻结契约
+        → 创建隔离 Git worktree → 搜索/局部读取 → 应用补丁
+        → 可见测试 + 工作区外验收 → 失败反馈与有限修复
         → 最终验收 → diff、轨迹与报告
 ```
 
@@ -173,6 +174,37 @@ $env:OPENAI_API_KEY = "your-api-key"
 .venv\Scripts\amor profile D:\path\to\target-repository
 ```
 
+### 推荐：先规划验收，再执行
+
+`v0.9.0` 的推荐流程分两次独立模型会话。第一次会话只有文件列表、搜索和读取工具，不能修改仓库或运行命令：
+
+```powershell
+$env:OPENAI_API_KEY = "your-api-key"
+
+.venv\Scripts\amor plan-task D:\path\to\target-repository `
+  --task "修复空列表输入导致的异常，并保持现有行为不变" `
+  --accept "空列表返回 0.0" `
+  --allow "src/**" `
+  --model "your-planner-model-id" `
+  --confirm-send-code
+```
+
+命令会生成 `artifacts/plans/<plan-id>/report.md` 和 `acceptance-plan.json`。先阅读报告中的验收条件、保持行为、边界用例和待确认问题；只有状态为 `READY` 的契约才能执行。确认无误后，使用可以相同也可不同的执行模型：
+
+```powershell
+.venv\Scripts\amor run D:\path\to\target-repository `
+  --contract "artifacts\plans\<plan-id>\acceptance-plan.json" `
+  --approve-contract `
+  --model "your-implementation-model-id" `
+  --confirm-send-code
+```
+
+`--approve-contract` 表示用户已审阅该契约。契约带内容哈希并绑定仓库基准提交；内容被改写、仓库 `HEAD` 变化、契约仍有待确认问题，或任务边界不一致时，执行会拒绝启动。
+
+当前自动扩展的外部验收为 Python-first，且只允许结构化函数用例（JSON 参数、等值或异常预期）。AMOR 解释这些数据，不会直接执行模型生成的任意 Python 测试源码。
+
+### 直接执行（兼容流程）
+
 设置 API Key，然后明确提供可修改范围和允许执行的验证命令：
 
 ```powershell
@@ -205,6 +237,8 @@ $env:OPENAI_API_KEY = "your-api-key"
 - OpenAI 可通过 `--base-url` 或 `OPENAI_BASE_URL` 覆盖地址；DeepSeek 对应 `--base-url` 或 `DEEPSEEK_BASE_URL`。
 - 当前仍使用本机子进程执行测试，不要对恶意或来源不明的仓库运行。
 - 验证成功后，补丁仍只保存在产物目录的隔离 `workspace/` 中，不会自动提交或应用回原仓库。
+- 验收规划器与执行 Agent 使用独立 Provider 会话；两阶段各自计入你的 API 用量。
+- 执行 Agent 只收到验收条件，不会获得工作区外的结构化用例文件；Verifier 失败时才把可见的失败摘要反馈给 Agent。
 - 独立 Verifier 失败后，真实项目任务默认在同一工作区和模型会话中最多追加 2 次修复；设为 `--max-verification-retries 0` 可关闭。
 - 模型连续三次重复同一工具调用，或在 diff 不变时重复相同失败，会由无进展检测器终止。
 - `--max-tokens` 限制一次任务累计模型 Token；达到 80% 后提示 Agent 收尾。普通工具调用越限时停止，但若模型已经完成测试、检查 Diff 并只请求最终验收，系统仍执行一次无需模型调用的 Verifier。
@@ -241,6 +275,6 @@ docs/                   架构决策
 web/                    Vite + React 可观测工作台
 ```
 
-模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)。
+模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)。
 
 完整产品规划见 [AMOR-Coding-Agent项目实现方案.md](./AMOR-Coding-Agent项目实现方案.md)。

@@ -4,6 +4,11 @@ import argparse
 import json
 from pathlib import Path
 
+from amor.acceptance import (
+    AcceptanceContractError,
+    load_acceptance_plan,
+    run_acceptance_planning,
+)
 from amor.domain import RunLimits
 from amor.benchmarks.experiment import run_planning_experiment, run_strategy_experiment
 from amor.benchmarks.runner import SUPPORTED_PROVIDERS, run_benchmark
@@ -27,16 +32,50 @@ def build_parser() -> argparse.ArgumentParser:
     profile = subparsers.add_parser("profile", help="inspect a local Git repository without modifying it")
     profile.add_argument("repository", type=Path)
 
+    plan_task = subparsers.add_parser(
+        "plan-task",
+        help="create an independent read-only acceptance contract for a Python task",
+    )
+    plan_task.add_argument("repository", type=Path)
+    plan_task.add_argument("--task", required=True, help="natural-language coding task")
+    plan_task.add_argument("--accept", action="append", default=[], help="known acceptance criterion")
+    plan_task.add_argument("--allow", action="append", required=True, help="user-approved write glob")
+    plan_task.add_argument(
+        "--validation-json",
+        action="append",
+        default=[],
+        help="validation argv JSON; when omitted, repository suggestions are used",
+    )
+    plan_task.add_argument(
+        "--provider",
+        choices=("openai-responses", "deepseek-responses"),
+        default="openai-responses",
+    )
+    plan_task.add_argument("--model", required=True, help="exact provider model id")
+    plan_task.add_argument("--base-url", help="Responses-compatible API base URL")
+    plan_task.add_argument("--artifacts", type=Path, default=Path("artifacts/plans"))
+    plan_task.add_argument("--max-rounds", type=int, default=12)
+    plan_task.add_argument("--max-tokens", type=int, default=40_000)
+    plan_task.add_argument("--max-output-tokens", type=int, default=4_000)
+    plan_task.add_argument("--context-budget-chars", type=int, default=40_000)
+    plan_task.add_argument("--confirm-send-code", action="store_true")
+
     run = subparsers.add_parser("run", help="run a model-driven task in an isolated local Git worktree")
     run.add_argument("repository", type=Path)
-    run.add_argument("--task", required=True, help="natural-language coding task")
+    run.add_argument("--task", help="natural-language coding task")
     run.add_argument("--accept", action="append", default=[], help="acceptance criterion; may be repeated")
-    run.add_argument("--allow", action="append", required=True, help="allowed write glob; may be repeated")
+    run.add_argument("--allow", action="append", default=[], help="allowed write glob; may be repeated")
     run.add_argument(
         "--validation-json",
         action="append",
-        required=True,
+        default=[],
         help='approved argv JSON array, e.g. ["python","-m","pytest"]',
+    )
+    run.add_argument("--contract", type=Path, help="frozen acceptance-plan.json from plan-task")
+    run.add_argument(
+        "--approve-contract",
+        action="store_true",
+        help="confirm the frozen contract and its structured acceptance cases",
     )
     run.add_argument(
         "--provider",
@@ -145,11 +184,81 @@ def main() -> int:
             raise SystemExit(str(exc)) from exc
         print(json.dumps(profile.model_dump(mode="json"), ensure_ascii=False, indent=2))
         return 0
+    if arguments.command == "plan-task":
+        if not arguments.confirm_send_code:
+            raise SystemExit("refusing acceptance planning without --confirm-send-code")
+        try:
+            validation_commands = [
+                _parse_command_json(value) for value in arguments.validation_json
+            ] or None
+            provider = _build_api_provider(
+                arguments.provider,
+                model=arguments.model,
+                base_url=arguments.base_url,
+                max_output_tokens=arguments.max_output_tokens,
+            )
+            artifacts = arguments.artifacts
+            if not artifacts.is_absolute():
+                artifacts = Path.cwd().resolve() / artifacts
+            plan = run_acceptance_planning(
+                repository=arguments.repository,
+                instruction=arguments.task,
+                acceptance_criteria=arguments.accept,
+                allowed_paths=arguments.allow,
+                validation_commands=validation_commands,
+                provider_name=arguments.provider,
+                model=arguments.model,
+                provider=provider,
+                artifacts_root=artifacts,
+                max_rounds=arguments.max_rounds,
+                max_total_tokens=arguments.max_tokens,
+                context_budget_chars=arguments.context_budget_chars,
+            )
+        except (AcceptanceContractError, ProviderError, RuntimeError, ValueError, WorkspaceError) as exc:
+            raise SystemExit(str(exc)) from exc
+        plan_root = artifacts / plan.plan_id
+        print(f"acceptance plan {plan.plan_id}: {plan.status}")
+        print(f"  criteria: {len(plan.acceptance_criteria)}")
+        print(f"  structured cases: {len(plan.python_cases)}")
+        print(f"  contract: {plan_root / 'acceptance-plan.json'}")
+        print(f"  report: {plan_root / 'report.md'}")
+        for question in plan.questions:
+            print(f"  question: {question}")
+        return 0 if plan.status == "READY" else 2
     if arguments.command == "run":
         if not arguments.confirm_send_code:
             raise SystemExit("refusing API run without --confirm-send-code")
         try:
-            validation_commands = [_parse_command_json(value) for value in arguments.validation_json]
+            acceptance_plan = None
+            acceptance_plan_path = None
+            if arguments.contract:
+                if not arguments.approve_contract:
+                    raise ValueError("--approve-contract is required with --contract")
+                if arguments.task or arguments.accept or arguments.allow or arguments.validation_json:
+                    raise ValueError(
+                        "--contract cannot be combined with --task, --accept, --allow, or --validation-json"
+                    )
+                acceptance_plan_path = arguments.contract.resolve()
+                acceptance_plan = load_acceptance_plan(acceptance_plan_path)
+                if acceptance_plan.status != "READY":
+                    raise ValueError("acceptance plan still requires user input")
+                instruction = acceptance_plan.instruction
+                acceptance_criteria = acceptance_plan.acceptance_criteria
+                allowed_paths = acceptance_plan.allowed_paths
+                validation_commands = acceptance_plan.validation_commands
+            else:
+                if arguments.approve_contract:
+                    raise ValueError("--approve-contract requires --contract")
+                if not arguments.task or not arguments.allow or not arguments.validation_json:
+                    raise ValueError(
+                        "direct run requires --task, at least one --allow, and --validation-json"
+                    )
+                instruction = arguments.task
+                acceptance_criteria = arguments.accept
+                allowed_paths = arguments.allow
+                validation_commands = [
+                    _parse_command_json(value) for value in arguments.validation_json
+                ]
             provider = _build_api_provider(
                 arguments.provider,
                 model=arguments.model,
@@ -167,9 +276,9 @@ def main() -> int:
             report = run_repository_task(
                 project_root=project_root,
                 repository=arguments.repository,
-                instruction=arguments.task,
-                acceptance_criteria=arguments.accept,
-                allowed_paths=arguments.allow,
+                instruction=instruction,
+                acceptance_criteria=acceptance_criteria,
+                allowed_paths=allowed_paths,
                 validation_commands=validation_commands,
                 provider_name=arguments.provider,
                 model=arguments.model,
@@ -184,8 +293,10 @@ def main() -> int:
                 context_strategy=arguments.strategy,
                 context_budget_chars=arguments.context_budget_chars,
                 planning_strategy=arguments.planning,
+                acceptance_plan=acceptance_plan,
+                acceptance_plan_path=acceptance_plan_path,
             )
-        except (RuntimeError, WorkspaceError, ValueError) as exc:
+        except (AcceptanceContractError, RuntimeError, WorkspaceError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
         print(f"{report.task.task_id}: {report.final_status.value}")
         print(f"  workspace: {report.workspace_path}")

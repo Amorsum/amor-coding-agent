@@ -697,6 +697,7 @@ function checkLabel(name: string) {
     agent_loop: 'Agent 执行流程',
     scope: '修改范围',
     static_compile: '静态编译',
+    external_acceptance: '外部验收契约',
     hidden_tests: '隐藏验收测试',
   };
   if (name.startsWith('visible_tests_')) return `可见测试 ${name.slice('visible_tests_'.length)}`;

@@ -12,6 +12,8 @@ def build_verification_contract(
     baseline_commit: str,
     *,
     acceptance_source: str,
+    acceptance_plan_id: str | None = None,
+    acceptance_plan_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Freeze the user-controlled acceptance boundary before model execution."""
     payload: dict[str, Any] = {
@@ -23,6 +25,10 @@ def build_verification_contract(
         "allowed_paths": task.allowed_paths,
         "validation_commands": task.visible_validation_commands,
         "hidden_tests": False,
+        "external_acceptance": {
+            "plan_id": acceptance_plan_id,
+            "contract_sha256": acceptance_plan_sha256,
+        },
         "sources": {
             "instruction": "user",
             "acceptance_criteria": acceptance_source,

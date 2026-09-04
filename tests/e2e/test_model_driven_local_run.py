@@ -1,7 +1,9 @@
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+from amor.acceptance import write_acceptance_plan
 from amor.benchmarks import BenchmarkLayout
 from amor.domain import RunLimits, TerminalStatus
 from amor.local_runner import run_repository_task
@@ -29,6 +31,43 @@ def test_model_driven_run_edits_only_isolated_worktree(tmp_path: Path) -> None:
     )
     source_repository = fixture_workspace.source_repository
     original = (source_repository / "src/calculator.py").read_text(encoding="utf-8")
+    validation = [sys.executable, "-m", "unittest", "tests.test_calculator", "-v"]
+    plan_path = tmp_path / "contract" / "acceptance-plan.json"
+    plan = write_acceptance_plan(
+        plan_path,
+        {
+            "schema_version": "v1",
+            "plan_id": "plan-e2e",
+            "status": "READY",
+            "baseline_commit": fixture_workspace.baseline_commit,
+            "instruction": "average([]) must return 0.0",
+            "acceptance_criteria": ["empty input returns 0.0", "existing tests pass"],
+            "preserved_behaviors": ["non-empty averages remain unchanged"],
+            "edge_cases": ["empty list"],
+            "allowed_paths": ["src/**"],
+            "validation_commands": [validation],
+            "python_cases": [
+                {
+                    "name": "empty average",
+                    "module": "src.calculator",
+                    "callable": "average",
+                    "args_json": "[[]]",
+                    "kwargs_json": "{}",
+                    "expectation": "equals",
+                    "expected_json": "0.0",
+                    "exception_type": "",
+                    "rationale": "requested behavior",
+                }
+            ],
+            "evidence_files": ["src/calculator.py", "tests/test_calculator.py"],
+            "questions": [],
+            "summary": "accept empty input without regressing existing behavior",
+            "provider": "fake",
+            "model": "fake-planner",
+            "token_usage": {},
+            "created_at": datetime.now(timezone.utc),
+        },
+    )
     provider = FakeModelProvider(
         [
             call(1, "update_plan", {"steps": ["find average", "patch empty input", "test and review"], "reason": "initial plan"}),
@@ -46,7 +85,7 @@ def test_model_driven_run_edits_only_isolated_worktree(tmp_path: Path) -> None:
             call(
                 5,
                 "run_validation",
-                {"command": [sys.executable, "-m", "unittest", "tests.test_calculator", "-v"]},
+                {"command": validation},
             ),
             call(6, "get_git_diff", {}),
             call(7, "submit_for_verification", {"summary": "tests pass and diff is minimal"}),
@@ -57,18 +96,21 @@ def test_model_driven_run_edits_only_isolated_worktree(tmp_path: Path) -> None:
         project_root=project_root(),
         repository=source_repository,
         instruction="average([]) must return 0.0",
-        acceptance_criteria=["empty input returns 0.0", "existing tests pass"],
-        allowed_paths=["src/**"],
-        validation_commands=[[sys.executable, "-m", "unittest", "tests.test_calculator", "-v"]],
+        acceptance_criteria=plan.acceptance_criteria,
+        allowed_paths=plan.allowed_paths,
+        validation_commands=plan.validation_commands,
         provider_name="fake",
         model="fake-model",
         provider=provider,
         artifacts_root=tmp_path / "local-runs",
         limits=RunLimits(max_rounds=10, max_seconds=120),
+        acceptance_plan=plan,
+        acceptance_plan_path=plan_path,
     )
 
     assert report.final_status == TerminalStatus.SUCCEEDED
     assert report.verification.passed
+    assert any(check.name == "external_acceptance" for check in report.verification.checks)
     assert "if not values" in report.git_diff
     assert (source_repository / "src/calculator.py").read_text(encoding="utf-8") == original
     trace = Path(report.trace_path).read_text(encoding="utf-8")
@@ -82,6 +124,11 @@ def test_model_driven_run_edits_only_isolated_worktree(tmp_path: Path) -> None:
     assert all("search_code before read_file" in request["instructions"] for request in provider.requests)
     assert '"event_type": "context_evidence"' in trace
     assert report.state.context_usage["retained_chars"] > 0
+    contract = json.loads(
+        (Path(report.trace_path).parent / "verification-contract.json").read_text(encoding="utf-8")
+    )
+    assert contract["sources"]["acceptance_criteria"] == "approved-planner-contract"
+    assert contract["external_acceptance"]["contract_sha256"] == plan.contract_sha256
 
 
 def test_model_driven_run_blocks_repeated_identical_searches(tmp_path: Path) -> None:

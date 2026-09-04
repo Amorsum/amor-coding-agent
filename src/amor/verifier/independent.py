@@ -23,6 +23,7 @@ class IndependentVerifier:
         workspace: IsolatedWorkspace,
         *,
         include_hidden_tests: bool = True,
+        structured_plan_path: Path | None = None,
     ) -> VerificationResult:
         checks: list[VerificationCheck] = []
 
@@ -43,6 +44,33 @@ class IndependentVerifier:
 
         for index, command in enumerate(task.visible_validation_commands, start=1):
             checks.append(self._run_check(f"visible_tests_{index}", command, workspace.root, task))
+
+        if structured_plan_path is not None:
+            plan_path = structured_plan_path.resolve()
+            try:
+                plan_path.relative_to(workspace.root.resolve())
+            except ValueError:
+                checks.append(
+                    self._run_check(
+                        "external_acceptance",
+                        [
+                            sys.executable,
+                            "-I",
+                            str(Path(__file__).with_name("structured_cases.py").resolve()),
+                            str(plan_path),
+                        ],
+                        workspace.root,
+                        task,
+                    )
+                )
+            else:
+                checks.append(
+                    VerificationCheck(
+                        name="external_acceptance",
+                        passed=False,
+                        summary="structured acceptance plan must remain outside the agent workspace",
+                    )
+                )
 
         if not include_hidden_tests:
             passed = all(check.passed for check in checks)
@@ -154,6 +182,8 @@ class IndependentVerifier:
             return "static_validation_failure"
         if "hidden_tests" in failed_names:
             return "behavior_not_fixed"
+        if "external_acceptance" in failed_names:
+            return "acceptance_contract_failure"
         return "visible_validation_failure"
 
     @staticmethod

@@ -45,3 +45,41 @@ def test_web_defaults_to_local_only_host() -> None:
     assert arguments.host == "127.0.0.1"
     assert arguments.port == 8765
     assert str(arguments.artifacts) == "artifacts"
+
+
+def test_plan_task_collects_user_approved_boundaries() -> None:
+    arguments = build_parser().parse_args(
+        [
+            "plan-task",
+            ".",
+            "--task",
+            "fix empty input",
+            "--allow",
+            "src/**",
+            "--model",
+            "planner-model",
+        ]
+    )
+
+    assert arguments.command == "plan-task"
+    assert arguments.allow == ["src/**"]
+    assert arguments.validation_json == []
+    assert arguments.max_tokens == 40_000
+
+
+def test_run_can_use_a_frozen_contract_without_repeating_task_flags() -> None:
+    arguments = build_parser().parse_args(
+        [
+            "run",
+            ".",
+            "--contract",
+            "artifacts/plans/example/acceptance-plan.json",
+            "--approve-contract",
+            "--model",
+            "implementation-model",
+        ]
+    )
+
+    assert arguments.task is None
+    assert arguments.allow == []
+    assert arguments.approve_contract
