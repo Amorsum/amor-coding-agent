@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from amor.domain import TaskSpec
+
+
+BENCHMARK_DATASET_VERSION = "v2-20-task"
 
 
 @dataclass(frozen=True)
@@ -47,3 +51,31 @@ def load_hidden_suite(layout: BenchmarkLayout, task_id: str) -> Path:
     if not suite_path.is_dir():
         raise FileNotFoundError(suite_path)
     return suite_path
+
+
+def benchmark_fingerprint(layout: BenchmarkLayout, task_ids: list[str]) -> str:
+    """Hash selected task specs, fixtures, and hidden suites for reproducibility."""
+    manifest = json.loads((layout.hidden_tests / "manifest.json").read_text(encoding="utf-8"))
+    paths: set[Path] = {layout.hidden_tests / "manifest.json"}
+    fixture_names: set[str] = set()
+    for task_id in sorted(task_ids):
+        task_path = layout.tasks / f"{task_id}.json"
+        paths.add(task_path)
+        raw = json.loads(task_path.read_text(encoding="utf-8"))
+        fixture_names.add(raw["fixture"])
+        suite_name = manifest.get(task_id)
+        if suite_name:
+            paths.update(path for path in (layout.hidden_tests / suite_name).rglob("*") if path.is_file())
+    for fixture_name in fixture_names:
+        paths.update(path for path in (layout.fixtures / fixture_name).rglob("*") if path.is_file())
+
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        relative_parts = path.relative_to(layout.root).parts
+        if ".git" in relative_parts or "__pycache__" in relative_parts or path.suffix == ".pyc":
+            continue
+        digest.update(path.relative_to(layout.root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()

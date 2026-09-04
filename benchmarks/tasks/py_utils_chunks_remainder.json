@@ -1,0 +1,12 @@
+{
+  "task_id": "py_utils_chunks_remainder",
+  "fixture": "python_utils",
+  "category": "collection_boundary",
+  "difficulty": "easy",
+  "expected_status": "SUCCEEDED",
+  "instruction": "chunks 必须保留长度不足 size 的最后一组，同时继续拒绝非正 size。",
+  "acceptance_criteria": ["末尾余数不会丢失", "非正 size 抛出 ValueError", "只修改 src/sequences.py"],
+  "allowed_paths": ["src/sequences.py"],
+  "visible_validation_commands": [["{python}", "-m", "unittest", "tests.test_sequences.SequenceTests.test_chunks_retain_remainder", "-v"]],
+  "limits": {"max_rounds": 10, "max_seconds": 60, "max_output_chars": 20000, "max_file_bytes": 256000}
+}

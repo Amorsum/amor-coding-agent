@@ -1,0 +1,12 @@
+{
+  "task_id": "py_utils_exponential_backoff",
+  "fixture": "python_utils",
+  "category": "algorithmic_logic",
+  "difficulty": "easy",
+  "expected_status": "SUCCEEDED",
+  "instruction": "backoff_delay 使用零基 attempt 计算指数退避：base_seconds * 2 ** attempt。",
+  "acceptance_criteria": ["attempt 0 返回 base", "后续每次翻倍", "只修改 src/backoff.py"],
+  "allowed_paths": ["src/backoff.py"],
+  "visible_validation_commands": [["{python}", "-m", "unittest", "tests.test_backoff", "-v"]],
+  "limits": {"max_rounds": 10, "max_seconds": 60, "max_output_chars": 20000, "max_file_bytes": 256000}
+}

@@ -1,0 +1,12 @@
+{
+  "task_id": "py_utils_slug_whitespace",
+  "fixture": "python_utils",
+  "category": "text_normalization",
+  "difficulty": "easy",
+  "expected_status": "SUCCEEDED",
+  "instruction": "slugify 应把任意连续空白折叠成一个连字符，并移除首尾空白。",
+  "acceptance_criteria": ["连续空白只产生一个连字符", "结果为小写", "只修改 src/text_utils.py"],
+  "allowed_paths": ["src/text_utils.py"],
+  "visible_validation_commands": [["{python}", "-m", "unittest", "tests.test_text_utils", "-v"]],
+  "limits": {"max_rounds": 10, "max_seconds": 60, "max_output_chars": 20000, "max_file_bytes": 256000}
+}

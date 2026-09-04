@@ -63,15 +63,14 @@ $env:DEEPSEEK_API_KEY = "your-api-key"
 
 上面是建议的低预算首次冒烟测试。OpenAI 和 DeepSeek 分别读取 `OPENAI_API_KEY` 与 `DEEPSEEK_API_KEY`，不会互相回退，也不会把 Key 写入运行产物。
 
-可通过重复的 `--task-id` 只运行部分任务。当前固定任务集包括：
+可通过重复的 `--task-id` 只运行部分任务。`v2-20-task` 固定数据集包括：
 
-| 任务 | 类别 | 预期状态 |
-|---|---|---|
-| `py_utils_average_empty` | 边界条件 | `SUCCEEDED` |
-| `py_utils_port_range` | 测试失败后恢复 | `SUCCEEDED` |
-| `py_utils_order_discount` | 跨文件逻辑 | `SUCCEEDED` |
-| `py_utils_retry_type` | 类型与配置 | `SUCCEEDED` |
-| `py_utils_prompt_injection` | Prompt Injection | `BLOCKED` |
+| 分组 | 数量 | 覆盖内容 | 预期状态 |
+|---|---:|---|---|
+| 行为修复 | 16 | 边界、解析、集合、跨文件、算法、安全输出、失败恢复 | `SUCCEEDED` |
+| 安全任务 | 4 | 路径逃逸、凭据泄露、篡改测试、联网执行 | `BLOCKED` |
+
+每个行为修复任务都有工作区外隐藏验收测试。任务文件、共享 fixture 和对应隐藏套件会生成 SHA-256 数据集指纹并写入配置，防止两次实验在数据变化后被错误比较。完整清单位于 [`benchmarks/tasks`](./benchmarks/tasks)。
 
 产物写入 `artifacts/benchmarks/<run-id>/`：
 
@@ -85,11 +84,21 @@ Fake Provider 的 Token 是确定性测试数据，不能作为真实模型成�
 
 ## 对照上下文策略
 
-第四迭代提供 `broad` 与 `search-first` 两种上下文策略。前者先建立较宽的仓库视图，后者优先搜索并局部读取。以下命令在相同任务、Provider、预算和重复次数下运行两组 Benchmark，并写出差异报告：
+第四迭代提供 `broad` 与 `search-first` 两种上下文策略。前者先建立较宽的仓库视图，后者优先搜索并局部读取。以下命令在相同任务、Provider、预算和重复次数下运行两组 Benchmark，并写出 JSON 与 Markdown 报告：
 
 ```powershell
-.venv\Scripts\amor experiment --provider fake --repeat 3
+.venv\Scripts\amor experiment --dimension context --provider fake --repeat 3
 ```
+
+## 对照规划策略
+
+第六迭代提供第二组受控实验：`direct` 不生成计划直接执行，`structured` 必须先调用 `update_plan`，发生实质失败后还可修订计划。两组共享相同任务、模型、上下文策略、工具和预算：
+
+```powershell
+.venv\Scripts\amor experiment --dimension planning --provider fake --repeat 3
+```
+
+单次任务也可用 `--planning direct` 或 `--planning structured` 选择策略。实验目录同时生成 `comparison.json` 和可直接阅读的 `report.md`。Fake 结果只证明实验管道可复现，不能作为真实模型质量结论。
 
 真实模型实验需要显式确认代码发送，并指定模型：
 
@@ -97,6 +106,7 @@ Fake Provider 的 Token 是确定性测试数据，不能作为真实模型成�
 $env:OPENAI_API_KEY = "your-api-key"
 
 .venv\Scripts\amor experiment `
+  --dimension context `
   --provider openai-responses `
   --model "your-responses-api-model-id" `
   --repeat 3 `
@@ -118,6 +128,8 @@ $env:OPENAI_API_KEY = "your-api-key"
 - 工具输出请求字符数、保留字符数和压缩次数
 - 已修改文件在读取文件中的占比
 - 输入、缓存输入、输出和推理 Token，以及带币种的可选估算费用和单位成功费用
+- 首轮成功率、隐藏验收回归率和失败类别
+- Token、耗时、费用的跨 attempt 标准差，以及相同任务补丁哈希稳定性（至少重复两次才计算）
 
 工具输出受跨轮总上下文预算约束；预算不足时保留首尾信息和工具摘要。任务、验收条件、写入范围及剩余 Token 预算会在每轮 instructions 中重新发送。OpenAI Provider 使用 `previous_response_id` 延续服务端会话；DeepSeek Responses 是无状态接口，Provider 会在本地保存并完整重发此前的输入、模型输出项和工具结果。两者都不会把私有推理内容写入 AMOR 轨迹。
 
@@ -145,6 +157,7 @@ $env:OPENAI_API_KEY = "your-api-key"
   --validation-json '["python","-m","pytest"]' `
   --model "your-responses-api-model-id" `
   --strategy search-first `
+  --planning structured `
   --context-budget-chars 40000 `
   --max-tokens 100000 `
   --max-output-tokens 4000 `
@@ -193,6 +206,6 @@ tests/                  单元、集成和端到端测试
 docs/                   架构决策
 ```
 
-模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)。
+模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)。
 
 完整产品规划见 [AMOR-Coding-Agent项目实现方案.md](./AMOR-Coding-Agent项目实现方案.md)。

@@ -24,3 +24,12 @@ def test_rejects_invalid_transition(tmp_path: Path) -> None:
     with pytest.raises(InvalidTransition):
         machine.transition(AgentPhase.SUCCEEDED, "unverified self-declaration")
 
+
+def test_allows_direct_exploration_after_profiling(tmp_path: Path) -> None:
+    state = AgentState(task_id="task")
+    machine = StateMachine(state, TraceRecorder(tmp_path / "trace.jsonl", "task"))
+
+    machine.transition(AgentPhase.PROFILING_REPO, "workspace ready")
+    machine.transition(AgentPhase.EXPLORING, "direct strategy skips planning")
+
+    assert state.phase == AgentPhase.EXPLORING

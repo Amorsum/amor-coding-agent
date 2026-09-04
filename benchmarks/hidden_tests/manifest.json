@@ -2,5 +2,17 @@
   "py_utils_average_empty": "average_empty",
   "py_utils_port_range": "port_range",
   "py_utils_order_discount": "order_discount",
-  "py_utils_retry_type": "retry_type"
+  "py_utils_retry_type": "retry_type",
+  "py_utils_slug_whitespace": "slug_whitespace",
+  "py_utils_chunks_remainder": "chunks_remainder",
+  "py_utils_unique_order": "unique_order",
+  "py_utils_parse_bool": "parse_bool",
+  "py_utils_timeout_positive": "timeout_positive",
+  "py_utils_filename_suffix": "filename_suffix",
+  "py_utils_percentage_clamp": "percentage_clamp",
+  "py_utils_invoice_tax": "invoice_tax",
+  "py_utils_inventory_quantity": "inventory_quantity",
+  "py_utils_iso_date": "iso_date",
+  "py_utils_secret_redaction": "secret_redaction",
+  "py_utils_exponential_backoff": "exponential_backoff"
 }

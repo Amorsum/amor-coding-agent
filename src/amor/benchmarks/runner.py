@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 import uuid
 from collections.abc import Callable
@@ -8,7 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from amor.benchmarks.fake_scenarios import build_fake_provider
-from amor.benchmarks.loader import BenchmarkLayout, list_task_ids, load_task
+from amor.benchmarks.loader import (
+    BENCHMARK_DATASET_VERSION,
+    BenchmarkLayout,
+    benchmark_fingerprint,
+    list_task_ids,
+    load_task,
+)
 from amor.benchmarks.metrics import calculate_metrics
 from amor.benchmarks.models import BenchmarkAttemptRecord, BenchmarkRunSummary
 from amor.context import ContextStrategy
@@ -20,7 +27,12 @@ from amor.domain import (
     VerificationCheck,
     VerificationResult,
 )
-from amor.orchestrator import PROMPT_VERSION, ModelDrivenOrchestrator, ScriptedOrchestrator
+from amor.orchestrator import (
+    PROMPT_VERSION,
+    ModelDrivenOrchestrator,
+    PlanningStrategy,
+    ScriptedOrchestrator,
+)
 from amor.policy import PolicyEngine
 from amor.profiler import RepositoryProfiler
 from amor.providers import ModelProvider
@@ -45,6 +57,7 @@ def run_benchmark(
     selected_task_ids: list[str] | None = None,
     provider_factory: ProviderFactory | None = None,
     context_strategy: ContextStrategy | str = ContextStrategy.SEARCH_FIRST,
+    planning_strategy: PlanningStrategy | str = PlanningStrategy.STRUCTURED,
     context_budget_chars: int = 40_000,
     run_id_override: str | None = None,
     model_max_output_tokens: int = 4_000,
@@ -61,6 +74,9 @@ def run_benchmark(
     if provider_name in API_PROVIDERS and provider_factory is None:
         raise ValueError(f"{provider_name} benchmark requires a provider factory")
     strategy = ContextStrategy(context_strategy)
+    planning = PlanningStrategy(planning_strategy)
+    if provider_name == "scripted" and planning != PlanningStrategy.STRUCTURED:
+        raise ValueError("scripted benchmark only supports structured planning")
     if context_budget_chars < 1_000:
         raise ValueError("context budget must be at least 1000 characters")
     if model_max_output_tokens < 1:
@@ -91,6 +107,7 @@ def run_benchmark(
     unknown = sorted(set(task_ids) - available)
     if unknown:
         raise ValueError(f"unknown benchmark tasks: {', '.join(unknown)}")
+    dataset_fingerprint = benchmark_fingerprint(layout, task_ids)
 
     if run_id_override is not None and (
         not run_id_override or Path(run_id_override).name != run_id_override
@@ -106,9 +123,12 @@ def run_benchmark(
         run_root / "config.json",
         {
             "run_id": run_id,
+            "dataset_version": BENCHMARK_DATASET_VERSION,
+            "dataset_fingerprint": dataset_fingerprint,
             "provider": provider_name,
             "model": model,
             "context_strategy": strategy.value,
+            "planning_strategy": planning.value,
             "context_budget_chars": context_budget_chars,
             "prompt_version": PROMPT_VERSION,
             "model_max_output_tokens": model_max_output_tokens,
@@ -146,6 +166,7 @@ def run_benchmark(
                     provider_name=provider_name,
                     provider_factory=provider_factory,
                     context_strategy=strategy,
+                    planning_strategy=planning,
                     context_budget_chars=context_budget_chars,
                     input_cost_per_million=input_cost_per_million,
                     cached_input_cost_per_million=cached_input_cost_per_million,
@@ -156,9 +177,12 @@ def run_benchmark(
     metrics = calculate_metrics(attempts, task_ids)
     summary = BenchmarkRunSummary(
         run_id=run_id,
+        dataset_version=BENCHMARK_DATASET_VERSION,
+        dataset_fingerprint=dataset_fingerprint,
         provider=provider_name,
         model=model,
         context_strategy=strategy.value,
+        planning_strategy=planning.value,
         context_budget_chars=context_budget_chars,
         prompt_version=PROMPT_VERSION,
         model_max_output_tokens=model_max_output_tokens,
@@ -198,6 +222,7 @@ def _run_attempt(
     provider_name: str,
     provider_factory: ProviderFactory | None,
     context_strategy: ContextStrategy,
+    planning_strategy: PlanningStrategy,
     context_budget_chars: int,
     input_cost_per_million: float | None,
     cached_input_cost_per_million: float | None,
@@ -225,7 +250,7 @@ def _run_attempt(
         orchestrator = ScriptedOrchestrator(task, tools, trace)
     else:
         if provider_name == "fake":
-            provider = build_fake_provider(task, context_strategy)
+            provider = build_fake_provider(task, context_strategy, planning_strategy)
         else:
             assert provider_factory is not None
             provider = provider_factory(task, attempt_number)
@@ -238,6 +263,7 @@ def _run_attempt(
             trace,
             context_strategy=context_strategy,
             context_budget_chars=context_budget_chars,
+            planning_strategy=planning_strategy,
         )
 
     state = orchestrator.run_until_final_verification()
@@ -330,6 +356,16 @@ def _run_attempt(
         verification,
         no_progress,
     )
+    visible_checks = [
+        check for check in verification.checks if check.name.startswith("visible_tests_")
+    ]
+    regression_detected = (
+        agent_requested_verification
+        and bool(visible_checks)
+        and all(check.passed for check in visible_checks)
+        and any(check.name == "hidden_tests" and not check.passed for check in verification.checks)
+    )
+    patch_hash = hashlib.sha256(diff.encode("utf-8")).hexdigest() if diff else None
     return BenchmarkAttemptRecord(
         task_id=task.task_id,
         attempt=attempt_number,
@@ -338,11 +374,22 @@ def _run_attempt(
         expected_status=task.expected_status,
         actual_status=final_status,
         context_strategy=context_strategy.value,
+        planning_strategy=planning_strategy.value,
         outcome_matches_expected=outcome_matches,
+        first_try_success=(
+            task.expected_status == TerminalStatus.SUCCEEDED
+            and outcome_matches
+            and len(state.attempted_fixes) == 1
+        ),
+        regression_detected=regression_detected,
         verifier_passed=verification.passed,
         agent_requested_verification=agent_requested_verification,
         diagnosis_attempted=diagnosis_attempted,
-        recovery_succeeded=diagnosis_attempted and outcome_matches,
+        recovery_succeeded=(
+            diagnosis_attempted
+            and outcome_matches
+            and final_status == TerminalStatus.SUCCEEDED
+        ),
         rounds=state.round,
         patch_attempts=len(state.attempted_fixes),
         tool_calls=model_requested_calls if provider_name != "scripted" else len(tool_events),
@@ -360,6 +407,7 @@ def _run_attempt(
             cached_input_cost_per_million,
             output_cost_per_million,
         ),
+        patch_hash=patch_hash,
         files_read=len(successful_reads),
         unique_files_read=len(unique_read_paths),
         lines_read=sum(int(event.get("lines_read", 0)) for event in successful_reads),

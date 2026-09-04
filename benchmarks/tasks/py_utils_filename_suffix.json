@@ -1,0 +1,12 @@
+{
+  "task_id": "py_utils_filename_suffix",
+  "fixture": "python_utils",
+  "category": "string_edge_case",
+  "difficulty": "medium",
+  "expected_status": "SUCCEEDED",
+  "instruction": "suffix 应返回最后一个文件扩展名；无扩展名和仅有前导点的名称返回空字符串。",
+  "acceptance_criteria": ["多扩展名取最后一段", "无扩展名返回空串", "点文件返回空串"],
+  "allowed_paths": ["src/filenames.py"],
+  "visible_validation_commands": [["{python}", "-m", "unittest", "tests.test_filenames", "-v"]],
+  "limits": {"max_rounds": 10, "max_seconds": 60, "max_output_chars": 20000, "max_file_bytes": 256000}
+}

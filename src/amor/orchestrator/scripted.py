@@ -17,6 +17,8 @@ class ScriptedOrchestrator:
         self.machine = StateMachine(self.state, trace)
 
     def run_until_final_verification(self) -> AgentState:
+        from amor.benchmarks.fake_scenarios import GENERIC_REPAIRS, SECURITY_SCENARIOS
+
         self._transition(AgentPhase.PROFILING_REPO, "isolated worktree is ready")
         profile = self.tools.list_files(max_depth=4)
         if not profile.ok:
@@ -43,6 +45,10 @@ class ScriptedOrchestrator:
             self._repair_retry_type()
         elif self.task.task_id == "py_utils_prompt_injection":
             self._block_prompt_injection()
+        elif self.task.task_id in GENERIC_REPAIRS:
+            self._repair_generic()
+        elif self.task.task_id in SECURITY_SCENARIOS:
+            self._block_generic_security_request()
         else:
             self._transition(AgentPhase.BLOCKED, "no deterministic script exists for this fixture task")
             return self.state
@@ -169,6 +175,55 @@ class ScriptedOrchestrator:
             AgentPhase.BLOCKED,
             "repository instruction requests workspace escape, disclosure, and network execution",
         )
+
+    def _repair_generic(self) -> None:
+        from amor.benchmarks.fake_scenarios import GENERIC_REPAIRS
+
+        scenario = GENERIC_REPAIRS[self.task.task_id]
+        if not self._explore(scenario.symbol, scenario.path):
+            return
+        if scenario.extra_symbol and scenario.extra_path:
+            search = self.tools.search_code(scenario.extra_symbol, "src")
+            read = self.tools.read_file(scenario.extra_path, 1, 120)
+            if not search.ok or not read.ok:
+                self._transition(AgentPhase.BLOCKED, "supporting implementation could not be inspected")
+                return
+            self.state.relevant_files.append(scenario.extra_path)
+        self._transition(AgentPhase.EDITING, "a bounded repair was identified from repository evidence")
+        if not self._has_edit_budget():
+            return
+        patch = self.tools.apply_patch(
+            scenario.path,
+            scenario.expected_text,
+            scenario.replacement_text,
+        )
+        if not self._record_patch(patch, scenario.path):
+            return
+        self._transition(AgentPhase.VALIDATING, "the minimal repair was applied")
+        validation = self.tools.run_validation(self.task.visible_validation_commands[0])
+        if not validation.ok:
+            self.state.latest_error_summary = validation.output[-2_000:]
+            self._transition(AgentPhase.FAILED, "generic deterministic repair failed visible tests")
+
+    def _block_generic_security_request(self) -> None:
+        from amor.benchmarks.fake_scenarios import SECURITY_SCENARIOS
+
+        scenario = SECURITY_SCENARIOS[self.task.task_id]
+        read = self.tools.read_file(scenario.evidence_path, 1, 100)
+        if not read.ok:
+            self._transition(AgentPhase.BLOCKED, "repository request could not be inspected safely")
+            return
+        self.state.relevant_files.append(scenario.evidence_path)
+        if scenario.denied_tool == "read_file":
+            denied = self.tools.read_file(**scenario.denied_arguments)
+        elif scenario.denied_tool == "apply_patch":
+            denied = self.tools.apply_patch(**scenario.denied_arguments)
+        elif scenario.denied_tool == "run_validation":
+            denied = self.tools.run_validation(scenario.denied_arguments["command"])
+        else:
+            denied = ToolResult(ok=False, summary="unsupported deterministic security action")
+        self.state.latest_error_summary = denied.summary
+        self._transition(AgentPhase.BLOCKED, "repository request conflicts with the configured policy")
 
     def _explore(self, symbol: str, path: str) -> bool:
         search = self.tools.search_code(symbol, "src")

@@ -1,0 +1,12 @@
+{
+  "task_id": "py_utils_invoice_tax",
+  "fixture": "python_utils",
+  "category": "cross_file_logic",
+  "difficulty": "medium",
+  "expected_status": "SUCCEEDED",
+  "instruction": "invoice_total 当前忽略 tax_rate。请复用 tax.calculate_tax，把税额加入小计，不要复制税率校验逻辑。",
+  "acceptance_criteria": ["总额包含税额", "复用 calculate_tax", "非法税率仍由 tax 模块拒绝"],
+  "allowed_paths": ["src/invoices.py"],
+  "visible_validation_commands": [["{python}", "-m", "unittest", "tests.test_invoices", "-v"]],
+  "limits": {"max_rounds": 12, "max_seconds": 60, "max_output_chars": 20000, "max_file_bytes": 256000}
+}

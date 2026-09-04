@@ -5,10 +5,11 @@ import json
 from pathlib import Path
 
 from amor.domain import RunLimits
-from amor.benchmarks.experiment import run_strategy_experiment
+from amor.benchmarks.experiment import run_planning_experiment, run_strategy_experiment
 from amor.benchmarks.runner import SUPPORTED_PROVIDERS, run_benchmark
 from amor.context import SUPPORTED_CONTEXT_STRATEGIES, ContextStrategy
 from amor.local_runner import run_repository_task
+from amor.orchestrator import SUPPORTED_PLANNING_STRATEGIES, PlanningStrategy
 from amor.profiler import RepositoryProfiler
 from amor.providers import DeepSeekResponsesProvider, ModelProvider, OpenAIResponsesProvider, ProviderError
 from amor.runner import DEFAULT_TASK_IDS, run_demo
@@ -50,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-tokens", type=int, default=100_000)
     run.add_argument("--max-output-tokens", type=int, default=4_000)
     run.add_argument("--strategy", choices=SUPPORTED_CONTEXT_STRATEGIES, default=ContextStrategy.SEARCH_FIRST.value)
+    run.add_argument("--planning", choices=SUPPORTED_PLANNING_STRATEGIES, default=PlanningStrategy.STRUCTURED.value)
     run.add_argument("--context-budget-chars", type=int, default=40_000)
     run.add_argument(
         "--confirm-send-code",
@@ -65,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--base-url", help="Responses-compatible API base URL")
     benchmark.add_argument("--artifacts", type=Path, default=Path("artifacts/benchmarks"))
     benchmark.add_argument("--strategy", choices=SUPPORTED_CONTEXT_STRATEGIES, default=ContextStrategy.SEARCH_FIRST.value)
+    benchmark.add_argument("--planning", choices=SUPPORTED_PLANNING_STRATEGIES, default=PlanningStrategy.STRUCTURED.value)
     benchmark.add_argument("--context-budget-chars", type=int, default=40_000)
     benchmark.add_argument("--max-output-tokens", type=int, default=4_000)
     benchmark.add_argument("--max-tokens", type=int, help="override each task's total model-token budget")
@@ -78,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="confirm benchmark fixture snippets may be sent to the configured model provider",
     )
 
-    experiment = subparsers.add_parser("experiment", help="compare two context strategies on fixed tasks")
+    experiment = subparsers.add_parser("experiment", help="run a controlled context or planning experiment")
     experiment.add_argument(
         "--provider",
         choices=("fake", "openai-responses", "deepseek-responses"),
@@ -89,11 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
     experiment.add_argument("--repeat", type=int, default=3)
     experiment.add_argument("--base-url", help="Responses-compatible API base URL")
     experiment.add_argument("--artifacts", type=Path, default=Path("artifacts/experiments"))
+    experiment.add_argument("--dimension", choices=("context", "planning"), default="context")
     experiment.add_argument(
         "--strategy",
         action="append",
         choices=SUPPORTED_CONTEXT_STRATEGIES,
-        help="exactly two strategies in baseline/candidate order; defaults to broad then search-first",
+        help="context experiment only; exactly two values in baseline/candidate order",
     )
     experiment.add_argument("--context-budget-chars", type=int, default=40_000)
     experiment.add_argument("--max-output-tokens", type=int, default=4_000)
@@ -166,6 +170,7 @@ def main() -> int:
                 ),
                 context_strategy=arguments.strategy,
                 context_budget_chars=arguments.context_budget_chars,
+                planning_strategy=arguments.planning,
             )
         except (RuntimeError, WorkspaceError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
@@ -213,6 +218,7 @@ def main() -> int:
                 selected_task_ids=arguments.task_id,
                 provider_factory=provider_factory,
                 context_strategy=arguments.strategy,
+                planning_strategy=arguments.planning,
                 context_budget_chars=arguments.context_budget_chars,
                 model_max_output_tokens=arguments.max_output_tokens,
                 max_total_tokens=arguments.max_tokens,
@@ -258,37 +264,48 @@ def main() -> int:
         elif experiment_model is None:
             experiment_model = "fake-model"
 
-        strategies = arguments.strategy or [
-            ContextStrategy.BROAD.value,
-            ContextStrategy.SEARCH_FIRST.value,
-        ]
+        if arguments.dimension == "planning" and arguments.strategy:
+            raise SystemExit("--strategy is only valid for a context experiment")
         project_root = Path.cwd().resolve()
         artifacts = arguments.artifacts
         if not artifacts.is_absolute():
             artifacts = project_root / artifacts
         try:
-            result = run_strategy_experiment(
-                project_root=project_root,
-                artifacts_root=artifacts,
-                provider_name=arguments.provider,
-                model=experiment_model,
-                repeats=arguments.repeat,
-                strategies=strategies,
-                selected_task_ids=arguments.task_id,
-                provider_factory=provider_factory,
-                context_budget_chars=arguments.context_budget_chars,
-                model_max_output_tokens=arguments.max_output_tokens,
-                max_total_tokens=arguments.max_tokens,
-                cost_currency=_resolved_cost_currency(arguments),
-                input_cost_per_million=arguments.input_cost_per_million,
-                cached_input_cost_per_million=arguments.cached_input_cost_per_million,
-                output_cost_per_million=arguments.output_cost_per_million,
-            )
+            common_arguments = {
+                "project_root": project_root,
+                "artifacts_root": artifacts,
+                "provider_name": arguments.provider,
+                "model": experiment_model,
+                "repeats": arguments.repeat,
+                "selected_task_ids": arguments.task_id,
+                "provider_factory": provider_factory,
+                "context_budget_chars": arguments.context_budget_chars,
+                "model_max_output_tokens": arguments.max_output_tokens,
+                "max_total_tokens": arguments.max_tokens,
+                "cost_currency": _resolved_cost_currency(arguments),
+                "input_cost_per_million": arguments.input_cost_per_million,
+                "cached_input_cost_per_million": arguments.cached_input_cost_per_million,
+                "output_cost_per_million": arguments.output_cost_per_million,
+            }
+            if arguments.dimension == "planning":
+                result = run_planning_experiment(
+                    **common_arguments,
+                    strategies=[PlanningStrategy.DIRECT.value, PlanningStrategy.STRUCTURED.value],
+                )
+            else:
+                result = run_strategy_experiment(
+                    **common_arguments,
+                    strategies=arguments.strategy
+                    or [ContextStrategy.BROAD.value, ContextStrategy.SEARCH_FIRST.value],
+                )
         except (RuntimeError, ValueError, WorkspaceError) as exc:
             raise SystemExit(str(exc)) from exc
         comparison_path = artifacts.resolve() / result.experiment_id / "comparison.json"
         comparison = result.comparison
-        print(f"experiment {result.experiment_id}: {comparison.baseline_strategy} -> {comparison.candidate_strategy}")
+        print(
+            f"{result.dimension} experiment {result.experiment_id}: "
+            f"{comparison.baseline_strategy} -> {comparison.candidate_strategy}"
+        )
         print(f"  success-rate delta: {comparison.success_rate_delta:+.1%}")
         print(f"  input-token reduction: {comparison.input_token_reduction_rate:.1%}")
         print(f"  tool-call reduction: {comparison.tool_call_reduction_rate:.1%}")
@@ -296,6 +313,7 @@ def main() -> int:
         if comparison.estimated_cost_reduction_rate is not None:
             print(f"  estimated-cost reduction: {comparison.estimated_cost_reduction_rate:.1%}")
         print(f"  comparison: {comparison_path}")
+        print(f"  report: {comparison_path.parent / 'report.md'}")
         return 0
     return 2
 

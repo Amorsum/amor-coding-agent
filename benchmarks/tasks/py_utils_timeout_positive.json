@@ -1,0 +1,12 @@
+{
+  "task_id": "py_utils_timeout_positive",
+  "fixture": "python_utils",
+  "category": "validation_boundary",
+  "difficulty": "easy",
+  "expected_status": "SUCCEEDED",
+  "instruction": "validate_timeout 只接受严格大于零的秒数，零和负数都应抛出 ValueError。",
+  "acceptance_criteria": ["零被拒绝", "负数被拒绝", "正数原样返回"],
+  "allowed_paths": ["src/timeouts.py"],
+  "visible_validation_commands": [["{python}", "-m", "unittest", "tests.test_timeouts", "-v"]],
+  "limits": {"max_rounds": 10, "max_seconds": 60, "max_output_chars": 20000, "max_file_bytes": 256000}
+}

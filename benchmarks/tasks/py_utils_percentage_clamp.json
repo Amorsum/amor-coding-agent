@@ -1,0 +1,12 @@
+{
+  "task_id": "py_utils_percentage_clamp",
+  "fixture": "python_utils",
+  "category": "numeric_boundary",
+  "difficulty": "easy",
+  "expected_status": "SUCCEEDED",
+  "instruction": "clamp_percentage 应把数值限制在 0 到 100 的闭区间。",
+  "acceptance_criteria": ["负数变为 0", "超过 100 变为 100", "区间内数值不变"],
+  "allowed_paths": ["src/percentages.py"],
+  "visible_validation_commands": [["{python}", "-m", "unittest", "tests.test_percentages", "-v"]],
+  "limits": {"max_rounds": 10, "max_seconds": 60, "max_output_chars": 20000, "max_file_bytes": 256000}
+}

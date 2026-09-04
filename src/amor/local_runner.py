@@ -17,7 +17,7 @@ from amor.domain import (
     VerificationCheck,
     VerificationResult,
 )
-from amor.orchestrator import ModelDrivenOrchestrator
+from amor.orchestrator import ModelDrivenOrchestrator, PlanningStrategy
 from amor.policy import PolicyEngine
 from amor.profiler import RepositoryProfiler
 from amor.providers import ModelProvider
@@ -42,6 +42,7 @@ def run_repository_task(
     limits: RunLimits,
     context_strategy: ContextStrategy | str = ContextStrategy.SEARCH_FIRST,
     context_budget_chars: int = 40_000,
+    planning_strategy: PlanningStrategy | str = PlanningStrategy.STRUCTURED,
 ) -> RunReport:
     repository = repository.resolve()
     profile = RepositoryProfiler().profile(repository)
@@ -90,6 +91,7 @@ def run_repository_task(
         trace,
         context_strategy=context_strategy,
         context_budget_chars=context_budget_chars,
+        planning_strategy=planning_strategy,
     )
     state = orchestrator.run_until_final_verification()
 

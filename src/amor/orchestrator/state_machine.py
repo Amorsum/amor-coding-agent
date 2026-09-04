@@ -10,7 +10,11 @@ class InvalidTransition(RuntimeError):
 
 ALLOWED_TRANSITIONS: dict[AgentPhase, set[AgentPhase]] = {
     AgentPhase.INITIALIZING: {AgentPhase.PROFILING_REPO, AgentPhase.FAILED},
-    AgentPhase.PROFILING_REPO: {AgentPhase.PLANNING, AgentPhase.FAILED},
+    AgentPhase.PROFILING_REPO: {
+        AgentPhase.PLANNING,
+        AgentPhase.EXPLORING,
+        AgentPhase.FAILED,
+    },
     AgentPhase.PLANNING: {AgentPhase.EXPLORING, AgentPhase.BLOCKED, AgentPhase.FAILED},
     AgentPhase.EXPLORING: {
         AgentPhase.EDITING,

@@ -231,7 +231,11 @@ class ToolRegistry:
             result = execute()
         except PolicyViolation as exc:
             decision = PolicyDecision.DENIED
-            result = ToolResult(ok=False, summary=str(exc))
+            result = ToolResult(
+                ok=False,
+                summary=str(exc),
+                metadata={"policy_denied": True},
+            )
         except subprocess.TimeoutExpired:
             result = ToolResult(ok=False, summary="tool execution timed out")
         except (OSError, UnicodeError) as exc:

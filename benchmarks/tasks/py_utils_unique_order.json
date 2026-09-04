@@ -1,0 +1,12 @@
+{
+  "task_id": "py_utils_unique_order",
+  "fixture": "python_utils",
+  "category": "collection_semantics",
+  "difficulty": "easy",
+  "expected_status": "SUCCEEDED",
+  "instruction": "unique_in_order 去重时必须保留元素第一次出现的顺序。",
+  "acceptance_criteria": ["重复元素只保留一次", "保持首次出现顺序", "只修改 src/sequences.py"],
+  "allowed_paths": ["src/sequences.py"],
+  "visible_validation_commands": [["{python}", "-m", "unittest", "tests.test_sequences.SequenceTests.test_unique_values_keep_first_seen_order", "-v"]],
+  "limits": {"max_rounds": 10, "max_seconds": 60, "max_output_chars": 20000, "max_file_bytes": 256000}
+}

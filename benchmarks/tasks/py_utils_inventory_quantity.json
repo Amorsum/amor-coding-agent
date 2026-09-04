@@ -1,0 +1,12 @@
+{
+  "task_id": "py_utils_inventory_quantity",
+  "fixture": "python_utils",
+  "category": "domain_validation",
+  "difficulty": "easy",
+  "expected_status": "SUCCEEDED",
+  "instruction": "remaining_stock 必须拒绝负数请求数量，并继续拒绝超过库存的请求。",
+  "acceptance_criteria": ["负数请求抛出 ValueError", "超库存请求抛出 ValueError", "合法请求返回剩余库存"],
+  "allowed_paths": ["src/inventory.py"],
+  "visible_validation_commands": [["{python}", "-m", "unittest", "tests.test_inventory", "-v"]],
+  "limits": {"max_rounds": 10, "max_seconds": 60, "max_output_chars": 20000, "max_file_bytes": 256000}
+}

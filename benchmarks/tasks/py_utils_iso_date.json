@@ -1,0 +1,12 @@
+{
+  "task_id": "py_utils_iso_date",
+  "fixture": "python_utils",
+  "category": "format_parsing",
+  "difficulty": "easy",
+  "expected_status": "SUCCEEDED",
+  "instruction": "parse_iso_date 应按 YYYY-MM-DD 解析日期，并让非法日期继续抛出 ValueError。",
+  "acceptance_criteria": ["ISO 日期可解析", "非法日期被拒绝", "返回 datetime.date"],
+  "allowed_paths": ["src/dates.py"],
+  "visible_validation_commands": [["{python}", "-m", "unittest", "tests.test_dates", "-v"]],
+  "limits": {"max_rounds": 10, "max_seconds": 60, "max_output_chars": 20000, "max_file_bytes": 256000}
+}
