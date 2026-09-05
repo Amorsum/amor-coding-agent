@@ -145,3 +145,46 @@ def test_showcase_manifest_detects_content_tampering(tmp_path: Path) -> None:
 
     with pytest.raises(ShowcaseError, match="hash mismatch"):
         exporter.get(manifest.showcase_id)
+
+
+def test_stage_showcase_copies_only_verified_public_files(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    experiment_id = _experiment(artifacts)
+    exporter = ShowcaseExporter(artifacts)
+    manifest = exporter.export(experiment_id, confirm_public=True)
+    destination = tmp_path / "public-site"
+
+    staged = exporter.stage(manifest.showcase_id, destination, confirm_public=True)
+
+    assert staged == manifest
+    assert {path.name for path in destination.iterdir()} == {
+        "index.html",
+        "manifest.json",
+        "showcase.json",
+    }
+    assert (destination / "index.html").read_bytes() == (
+        artifacts / "showcases" / manifest.showcase_id / "index.html"
+    ).read_bytes()
+
+
+def test_stage_showcase_rejects_unexpected_deployment_content(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    experiment_id = _experiment(artifacts)
+    exporter = ShowcaseExporter(artifacts)
+    manifest = exporter.export(experiment_id, confirm_public=True)
+    destination = tmp_path / "public-site"
+    destination.mkdir()
+    (destination / ".env").write_text("SECRET=value", encoding="utf-8")
+
+    with pytest.raises(ShowcaseError, match="unexpected entries"):
+        exporter.stage(manifest.showcase_id, destination, confirm_public=True)
+
+
+def test_stage_showcase_requires_explicit_public_confirmation(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    experiment_id = _experiment(artifacts)
+    exporter = ShowcaseExporter(artifacts)
+    manifest = exporter.export(experiment_id, confirm_public=True)
+
+    with pytest.raises(ShowcaseError, match="explicit confirmation"):
+        exporter.stage(manifest.showcase_id, tmp_path / "public-site", confirm_public=False)

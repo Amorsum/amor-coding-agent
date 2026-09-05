@@ -188,6 +188,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="confirm that the sanitized aggregate snapshot may be publicly shared",
     )
+
+    stage = subparsers.add_parser(
+        "stage-showcase",
+        help="stage a verified showcase as a minimal static deployment",
+    )
+    stage.add_argument("--artifacts", type=Path, default=Path("artifacts"))
+    stage.add_argument("--showcase", required=True, help="16-character showcase id")
+    stage.add_argument("--output", type=Path, default=Path("public-site"))
+    stage.add_argument(
+        "--confirm-public",
+        action="store_true",
+        help="confirm that the verified snapshot may be copied into a deployment directory",
+    )
     return parser
 
 
@@ -506,6 +519,26 @@ def main() -> int:
         print(f"showcase {manifest.showcase_id}: EXPORTED")
         print(f"  page: {destination / 'index.html'}")
         print(f"  manifest: {destination / 'manifest.json'}")
+        return 0
+    if arguments.command == "stage-showcase":
+        if not arguments.confirm_public:
+            raise SystemExit("refusing public staging without --confirm-public")
+        artifacts = arguments.artifacts
+        if not artifacts.is_absolute():
+            artifacts = Path.cwd().resolve() / artifacts
+        output = arguments.output
+        if not output.is_absolute():
+            output = Path.cwd().resolve() / output
+        try:
+            manifest = ShowcaseExporter(artifacts).stage(
+                arguments.showcase,
+                output,
+                confirm_public=True,
+            )
+        except (ShowcaseError, OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"showcase {manifest.showcase_id}: STAGED")
+        print(f"  directory: {output}")
         return 0
     return 2
 

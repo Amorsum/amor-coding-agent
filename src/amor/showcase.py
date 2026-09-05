@@ -124,6 +124,39 @@ class ShowcaseExporter:
             raise ShowcaseError("showcase not found")
         return _load_manifest(self.output_root / showcase_id / "manifest.json", self.output_root)
 
+    def stage(
+        self,
+        showcase_id: str,
+        destination: Path,
+        *,
+        confirm_public: bool,
+    ) -> ShowcaseManifest:
+        """Copy one verified snapshot into a minimal static deployment directory."""
+        if not confirm_public:
+            raise ShowcaseError("public staging requires explicit confirmation")
+        manifest = self.get(showcase_id)
+        source = self.output_root / showcase_id
+        target = destination.resolve()
+        allowed_files = {"index.html", "showcase.json", "manifest.json"}
+        if target.exists():
+            unexpected = sorted(path.name for path in target.iterdir() if path.name not in allowed_files)
+            if unexpected:
+                raise ShowcaseError(
+                    "static deployment directory contains unexpected entries: "
+                    + ", ".join(unexpected)
+                )
+        target.mkdir(parents=True, exist_ok=True)
+        for name in sorted(allowed_files):
+            payload = (source / name).read_bytes()
+            temporary = target / f".{name}.{os.getpid()}.tmp"
+            try:
+                temporary.write_bytes(payload)
+                os.replace(temporary, target / name)
+            finally:
+                temporary.unlink(missing_ok=True)
+        _verify_staged_site(target, manifest)
+        return manifest
+
 
 def _public_snapshot(experiment: dict[str, Any], title: str) -> dict[str, Any]:
     comparison_keys = {
@@ -318,6 +351,18 @@ def _load_manifest(path: Path, output_root: Path) -> ShowcaseManifest:
         if not candidate.is_file() or hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
             raise ShowcaseError("showcase content hash mismatch")
     return manifest
+
+
+def _verify_staged_site(destination: Path, manifest: ShowcaseManifest) -> None:
+    staged_manifest = ShowcaseManifest.model_validate_json(
+        (destination / "manifest.json").read_text(encoding="utf-8")
+    )
+    if staged_manifest != manifest:
+        raise ShowcaseError("staged showcase manifest mismatch")
+    for name, digest in manifest.files.items():
+        candidate = destination / name
+        if not candidate.is_file() or hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
+            raise ShowcaseError("staged showcase content hash mismatch")
 
 
 def _percent(value: Any, *, signed: bool = False) -> str:

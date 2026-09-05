@@ -1,0 +1,138 @@
+{
+  "schema_version": "v1",
+  "showcase_id": "06b12a1f87785f10",
+  "generated_at": "2026-09-05T11:41:13.877806+00:00",
+  "title": "AMOR 规划策略实验",
+  "experiment": {
+    "experiment_id": "20260904T094932Z-4c76c186",
+    "dimension": "planning",
+    "provider": "deepseek-responses",
+    "model": "deepseek-v4-pro",
+    "dataset_version": "v2-20-task",
+    "dataset_fingerprint": "a1491a1b318081fe3420c638ec31537d89431ce76b7bea92eef55f0efae937d2",
+    "prompt_version": "v3-planning-ablation",
+    "repeats": 1,
+    "started_at": "2026-09-04T09:49:32.439378Z",
+    "finished_at": "2026-09-04T09:50:12.899150Z",
+    "fake_provider": false
+  },
+  "comparison": {
+    "baseline_strategy": "direct",
+    "candidate_strategy": "structured",
+    "context_char_reduction_rate": -0.0343,
+    "estimated_cost_reduction_rate": null,
+    "files_read_reduction_rate": 0.0,
+    "input_token_reduction_rate": -0.1742,
+    "success_rate_delta": -1.0,
+    "tool_call_reduction_rate": 0.0
+  },
+  "variants": [
+    {
+      "strategy": "direct",
+      "passed": true,
+      "metrics": {
+        "attempt_count": 1,
+        "attempt_success_rate": 1.0,
+        "average_context_relevance_rate": 0.5,
+        "average_duration_ms": 17264.0,
+        "average_files_read": 2.0,
+        "average_lines_read": 17.0,
+        "average_rounds": 7.0,
+        "average_tool_calls": 10.0,
+        "context_retention_rate": 1.0,
+        "cost_per_success": null,
+        "false_completion_rate": 0.0,
+        "first_try_success_rate": 1.0,
+        "patch_stability_rate": null,
+        "policy_denial_attempt_rate": 0.0,
+        "recovery_rate": 0.0,
+        "regression_rate": 0.0,
+        "scope_violation_rate": 0.0,
+        "stable_task_rate": null,
+        "successful_attempts": 1,
+        "task_count": 1,
+        "total_estimated_cost": null,
+        "total_tokens": 18499
+      }
+    },
+    {
+      "strategy": "structured",
+      "passed": false,
+      "metrics": {
+        "attempt_count": 1,
+        "attempt_success_rate": 0.0,
+        "average_context_relevance_rate": 0.5,
+        "average_duration_ms": 23103.0,
+        "average_files_read": 2.0,
+        "average_lines_read": 17.0,
+        "average_rounds": 8.0,
+        "average_tool_calls": 10.0,
+        "context_retention_rate": 1.0,
+        "cost_per_success": null,
+        "false_completion_rate": 0.0,
+        "first_try_success_rate": 0.0,
+        "patch_stability_rate": null,
+        "policy_denial_attempt_rate": 0.0,
+        "recovery_rate": 0.0,
+        "regression_rate": 0.0,
+        "scope_violation_rate": 0.0,
+        "stable_task_rate": null,
+        "successful_attempts": 0,
+        "task_count": 1,
+        "total_estimated_cost": null,
+        "total_tokens": 21718
+      }
+    }
+  ],
+  "attempts": [
+    {
+      "actual_status": "SUCCEEDED",
+      "attempt": 1,
+      "category": "edge_case",
+      "context_strategy": "search-first",
+      "denied_tool_calls": 0,
+      "difficulty": "easy",
+      "duration_ms": 17264,
+      "expected_status": "SUCCEEDED",
+      "failure_category": null,
+      "first_try_success": true,
+      "outcome_matches_expected": true,
+      "planning_strategy": "direct",
+      "rounds": 7,
+      "task_id": "py_utils_average_empty",
+      "tool_calls": 10,
+      "total_tokens": 18499,
+      "verifier_passed": true
+    },
+    {
+      "actual_status": "BUDGET_EXHAUSTED",
+      "attempt": 1,
+      "category": "edge_case",
+      "context_strategy": "search-first",
+      "denied_tool_calls": 0,
+      "difficulty": "easy",
+      "duration_ms": 23103,
+      "expected_status": "SUCCEEDED",
+      "failure_category": "budget_exhausted",
+      "first_try_success": false,
+      "outcome_matches_expected": false,
+      "planning_strategy": "structured",
+      "rounds": 8,
+      "task_id": "py_utils_average_empty",
+      "tool_calls": 10,
+      "total_tokens": 21718,
+      "verifier_passed": false
+    }
+  ],
+  "privacy": {
+    "redacted": true,
+    "task_details_limited": true,
+    "excluded": [
+      "source code and Git diff",
+      "task instructions and acceptance cases",
+      "tool traces and model outputs",
+      "local paths and workspace metadata",
+      "credentials and environment variables"
+    ]
+  }
+}
