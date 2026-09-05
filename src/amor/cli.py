@@ -18,6 +18,7 @@ from amor.orchestrator import SUPPORTED_PLANNING_STRATEGIES, PlanningStrategy
 from amor.profiler import RepositoryProfiler
 from amor.providers import ProviderError, build_api_provider
 from amor.runner import DEFAULT_TASK_IDS, run_demo
+from amor.showcase import ShowcaseError, ShowcaseExporter
 from amor.workspace.manager import WorkspaceError
 
 
@@ -174,6 +175,19 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--frontend", type=Path, help="built dashboard directory")
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8765)
+
+    showcase = subparsers.add_parser(
+        "export-showcase",
+        help="export a redacted static experiment snapshot",
+    )
+    showcase.add_argument("--artifacts", type=Path, default=Path("artifacts"))
+    showcase.add_argument("--experiment", required=True, help="16-character experiment artifact id")
+    showcase.add_argument("--title", default="AMOR 策略实验")
+    showcase.add_argument(
+        "--confirm-public",
+        action="store_true",
+        help="confirm that the sanitized aggregate snapshot may be publicly shared",
+    )
     return parser
 
 
@@ -473,6 +487,25 @@ def main() -> int:
             host=arguments.host,
             port=arguments.port,
         )
+        return 0
+    if arguments.command == "export-showcase":
+        if not arguments.confirm_public:
+            raise SystemExit("refusing public export without --confirm-public")
+        artifacts = arguments.artifacts
+        if not artifacts.is_absolute():
+            artifacts = Path.cwd().resolve() / artifacts
+        try:
+            manifest = ShowcaseExporter(artifacts).export(
+                arguments.experiment,
+                title=arguments.title,
+                confirm_public=True,
+            )
+        except (ShowcaseError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        destination = artifacts / "showcases" / manifest.showcase_id
+        print(f"showcase {manifest.showcase_id}: EXPORTED")
+        print(f"  page: {destination / 'index.html'}")
+        print(f"  manifest: {destination / 'manifest.json'}")
         return 0
     return 2
 

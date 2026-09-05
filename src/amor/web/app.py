@@ -4,14 +4,16 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
 
+from amor.showcase import ShowcaseError, ShowcaseExporter
 from amor.web.artifacts import ArtifactNotFound, ArtifactStore, InvalidArtifact
 from amor.web.jobs import (
     ClarificationRequest,
@@ -25,6 +27,14 @@ from amor.web.jobs import (
 )
 
 
+class ShowcaseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    experiment_id: str = Field(pattern=r"^[0-9a-f]{16}$")
+    title: str = Field(default="AMOR 策略实验", min_length=1, max_length=120)
+    confirm_public: Literal[True]
+
+
 def create_app(
     artifacts_root: Path | None = None,
     frontend_root: Path | None = None,
@@ -32,6 +42,8 @@ def create_app(
 ) -> FastAPI:
     resolved_artifacts = (artifacts_root or Path("artifacts")).resolve()
     store = ArtifactStore(resolved_artifacts)
+    showcase_exporter = ShowcaseExporter(resolved_artifacts)
+    showcase_exporter.output_root.mkdir(parents=True, exist_ok=True)
     manager = job_manager or TaskJobManager(resolved_artifacts)
 
     @asynccontextmanager
@@ -41,7 +53,7 @@ def create_app(
 
     app = FastAPI(
         title="AMOR Local Workbench API",
-        version="0.13.0",
+        version="0.14.0",
         description="Local task execution and artifact inspection API.",
         lifespan=lifespan,
     )
@@ -56,7 +68,7 @@ def create_app(
 
     @app.middleware("http")
     async def protect_local_mutations(request: Request, call_next: Any):
-        if request.method == "POST" and request.url.path.startswith("/api/jobs"):
+        if request.method == "POST" and request.url.path.startswith(("/api/jobs", "/api/showcases")):
             try:
                 _require_local_origin(request)
             except HTTPException as exc:
@@ -174,6 +186,34 @@ def create_app(
     def get_experiment(experiment_id: str) -> dict[str, Any]:
         return _read_or_404(lambda: store.get_experiment(experiment_id))
 
+    @app.get("/api/showcases")
+    def list_showcases() -> dict[str, Any]:
+        return {
+            "items": [
+                {
+                    **item.model_dump(mode="json"),
+                    "url": f"/showcases/{item.showcase_id}/",
+                }
+                for item in showcase_exporter.list()
+            ]
+        }
+
+    @app.post("/api/showcases", status_code=201)
+    def create_showcase(payload: ShowcaseRequest, request: Request) -> dict[str, Any]:
+        _require_local_origin(request)
+        try:
+            manifest = showcase_exporter.export(
+                payload.experiment_id,
+                title=payload.title,
+                confirm_public=payload.confirm_public,
+            )
+        except (ArtifactNotFound, InvalidArtifact, ShowcaseError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            **manifest.model_dump(mode="json"),
+            "url": f"/showcases/{manifest.showcase_id}/",
+        }
+
     @app.get("/api/experiments/{experiment_id}/attempts/{strategy}/{task_id}/{attempt}")
     def get_attempt(
         experiment_id: str,
@@ -184,6 +224,12 @@ def create_app(
         return _read_or_404(
             lambda: store.get_attempt(experiment_id, strategy, task_id, attempt)
         )
+
+    app.mount(
+        "/showcases",
+        StaticFiles(directory=showcase_exporter.output_root, html=True),
+        name="showcases",
+    )
 
     static_root = _frontend_root(frontend_root)
     if static_root is not None:

@@ -11,11 +11,14 @@ import {
   Code2,
   FileDiff,
   FlaskConical,
+  ExternalLink,
   GitCompareArrows,
   ListTree,
+  LoaderCircle,
   PlayCircle,
   RefreshCw,
   Route,
+  Share2,
   ShieldCheck,
   TerminalSquare,
 } from 'lucide-react';
@@ -86,6 +89,13 @@ type ExperimentDetail = ExperimentListItem & {
   attempts: Attempt[];
 };
 
+type ShowcaseResult = {
+  showcase_id: string;
+  title: string;
+  url: string;
+  files: Record<string, string>;
+};
+
 type AttemptDetail = {
   attempt: Attempt;
   report: {
@@ -150,6 +160,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [attemptLoading, setAttemptLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showcaseOpen, setShowcaseOpen] = useState(false);
 
   const loadExperiments = async () => {
     setLoading(true);
@@ -218,6 +229,7 @@ export default function Home() {
             setSelectedAttempt(null);
             setAttemptDetail(null);
             setSelectedId(match.id);
+            setShowcaseOpen(false);
             setSurface('experiments');
             return { selected: match.experiment_id, dimension: match.dimension };
           },
@@ -287,7 +299,7 @@ export default function Home() {
           <div>
             <div className="flex items-baseline gap-2">
               <h1 className="text-base font-semibold tracking-[0.16em]">AMOR</h1>
-              <span className="text-xs text-muted-foreground">v0.13.0</span>
+              <span className="text-xs text-muted-foreground">v0.14.0</span>
             </div>
             <p className="text-xs text-muted-foreground">可信任务工作台</p>
           </div>
@@ -351,6 +363,7 @@ export default function Home() {
                       setSelectedAttempt(null);
                       setAttemptDetail(null);
                       setSelectedId(item.id);
+                      setShowcaseOpen(false);
                     }}
                     className="experiment-button"
                     data-active={item.id === selectedId}
@@ -421,11 +434,24 @@ export default function Home() {
                     {experiment.dataset_version} · {experiment.provider}/{experiment.model ?? '无模型'} · 重复 {experiment.repeats} 次
                   </p>
                 </div>
-                <div className="fingerprint-card">
-                  <span>DATASET FINGERPRINT</span>
-                  <code>{experiment.dataset_fingerprint.slice(0, 20)}…</code>
+                <div className="grid gap-3">
+                  <div className="fingerprint-card">
+                    <span>DATASET FINGERPRINT</span>
+                    <code>{experiment.dataset_fingerprint.slice(0, 20)}…</code>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => setShowcaseOpen((value) => !value)}>
+                    <Share2 data-icon="inline-start" />生成公开快照
+                  </Button>
                 </div>
               </div>
+
+              {showcaseOpen && (
+                <ShowcasePanel
+                  experimentId={selectedSummary.id}
+                  dimension={experiment.dimension}
+                  onClose={() => setShowcaseOpen(false)}
+                />
+              )}
 
               <ComparisonCards experiment={experiment} />
 
@@ -574,6 +600,86 @@ function ComparisonCards({ experiment }: { experiment: ExperimentDetail }) {
         );
       })}
     </div>
+  );
+}
+
+function ShowcasePanel({
+  experimentId,
+  dimension,
+  onClose,
+}: {
+  experimentId: string;
+  dimension: string;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState(`AMOR ${dimensionLabel(dimension)}`);
+  const [confirmed, setConfirmed] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<ShowcaseResult | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const create = async () => {
+    setSubmitting(true);
+    setFailure(null);
+    try {
+      const response = await fetch('/api/showcases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          experiment_id: experimentId,
+          title: title.trim(),
+          confirm_public: confirmed,
+        }),
+      });
+      const payload = await response.json() as ShowcaseResult & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail ?? `API 返回 ${response.status}`);
+      setResult(payload);
+    } catch (reason) {
+      setFailure(reason instanceof Error ? reason.message : '无法生成公开快照');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Card className="showcase-panel border-cyan-300/20 bg-cyan-300/[0.035]">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><Share2 className="size-4 text-cyan-300" />静态脱敏导出</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {result ? (
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+            <div>
+              <p className="font-medium text-emerald-200">公开快照已生成</p>
+              <p className="mt-1 text-sm text-muted-foreground">内容哈希：<code>{result.showcase_id}</code>。源实验变化后需重新生成，不会覆盖旧快照。</p>
+            </div>
+            <a className="showcase-link" href={result.url} target="_blank" rel="noreferrer">
+              打开公开页面<ExternalLink className="size-4" />
+            </a>
+          </div>
+        ) : (
+          <>
+            <p className="text-sm leading-relaxed text-muted-foreground">仅导出策略汇总、任务状态和可复现性指纹。代码、Diff、任务指令、验收用例、工具轨迹、本地路径和环境变量均不会进入快照。</p>
+            <label className="grid gap-2 text-sm">
+              <span className="font-medium">公开页面标题</span>
+              <input className="task-input" value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} />
+            </label>
+            <label className="consent-row">
+              <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
+              <span>我已确认该实验的聚合指标和任务 ID 可以公开展示。</span>
+            </label>
+            {failure && <p className="text-sm text-rose-200">{failure}</p>}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={onClose}>取消</Button>
+              <Button className="bg-cyan-300 text-slate-950 hover:bg-cyan-200" disabled={!confirmed || !title.trim() || submitting} onClick={() => void create()}>
+                {submitting ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />}
+                生成脱敏快照
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

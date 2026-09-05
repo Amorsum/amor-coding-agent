@@ -2,7 +2,7 @@
 
 AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动的本地 Coding Agent。当前版本支持固定 Benchmark 演示，以及对干净的本地 Git 仓库运行自然语言修复任务。
 
-`v0.13.0` 增加每任务 Docker 命令沙箱：Agent 验证、独立 Verifier、结构化外部验收和隐藏测试可在同一个无网络容器边界中执行，并限制 CPU、内存、进程数、临时盘、工作区增长和运行时间。Docker 不可用时会拒绝启动，不会静默降级到宿主机；用户仍可显式选择兼容模式。
+`v0.14.0` 增加静态脱敏导出与公开展示模式：可以从已完成实验生成独立 HTML/JSON 快照，只保留聚合指标、任务状态和可复现性指纹，排除代码、Diff、任务指令、验收用例、工具轨迹、本地路径和环境变量。导出必须显式确认，文件清单带 SHA-256，可检测展示内容被改写。
 
 ## 当前可运行链路
 
@@ -82,10 +82,31 @@ $env:OPENAI_API_KEY = "your-api-key"
 - 每个任务的状态、轮次、工具调用与耗时
 - Verifier 检查、结构化计划、状态轨迹和 Git Diff
 - Fake Provider 的显式证据边界提示
+- 对选中实验生成聚合数据公开快照，并在本机打开最终静态页面
+- 每个快照使用内容派生 ID，源实验变化时不会静默覆盖旧版本
 
 网页任务仍遵守 CLI 的全部边界：目标仓库必须已经提交且工作区干净，Agent 修改和补丁交付分别发生在隔离 worktree 中，验证命令必须预先批准。Docker 模式只把目标项目命令放入容器；仓库分析、文件工具、Git 工作区管理和模型调用仍由本地 AMOR 服务控制。只有用户再次确认后才会创建新的本地分支并可选提交；原仓库当前分支不会切换，系统也不会自动推送。当前工作台仍只允许本机访问，不能因为加入容器就直接作为任意仓库公网执行服务。
 
 前端开发模式下，在另一个终端进入 `web/` 运行 `npm run dev`；开发服务器会把 `/api` 转发到本机 `8765` 端口。
+
+## 导出公开实验快照
+
+网页中的“生成公开快照”会列出脱敏范围并要求再次确认。也可以通过 CLI 导出；参数使用 Artifact API 生成的 16 位实验 ID，不接受文件路径：
+
+```powershell
+.venv\Scripts\amor export-showcase `
+  --experiment <experiment-artifact-id> `
+  --title "AMOR 规划策略实验" `
+  --confirm-public
+```
+
+产物位于 `artifacts/showcases/<showcase-id>/`：
+
+- `index.html`：无外部脚本、字体、图片或网络请求的静态展示页
+- `showcase.json`：同一份脱敏指标与有限任务状态，便于后续部署或复核
+- `manifest.json`：来源实验 ID、生成时间以及两个公开文件的 SHA-256
+
+本地工作台通过 `/showcases/<showcase-id>/` 预览。此功能不会自动部署、绑定域名或开放任务 API；公开部署应只上传该快照目录，不能把本地 AMOR 服务整体暴露到公网。
 
 ## 运行 Benchmark
 
@@ -306,6 +327,7 @@ Web 任务还会写入：
 - 补丁只能修改任务声明的路径。
 - 验证命令使用参数数组执行且必须与白名单完全匹配，不通过 shell。
 - Benchmark 隐藏测试位于目标工作区之外，由独立 Verifier 执行；真实项目只运行用户批准的验证命令。
+- 公开快照使用字段白名单重新构造，不复制原始报告；输出 CSP 禁止脚本、表单和外部资源，并用清单哈希检测改写。
 
 真实任务默认在每任务 Docker 容器中执行目标项目命令，容器禁网且不挂载 API Key、用户主目录或 Docker socket。文件检索与补丁仍由宿主 AMOR 进程在隔离 worktree 内完成，并受路径策略约束。宿主机兼容模式只适合受信任仓库。即使使用容器，当前本地路径选择、Provider 凭据和服务访问模型也不满足多租户公网要求。
 
@@ -314,6 +336,7 @@ Web 任务还会写入：
 ```text
 src/amor/               核心实现
 src/amor/execution/     宿主机与 Docker 命令执行边界
+src/amor/showcase.py    静态脱敏快照生成与完整性清单
 src/amor/web/           本地任务 API、Artifact API 与静态工作台托管
 benchmarks/fixtures/    示例目标仓库模板
 benchmarks/tasks/       Agent 可见任务规格
@@ -323,6 +346,6 @@ docs/                   架构决策
 web/                    Vite + React 可观测工作台
 ```
 
-模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)，第十二迭代的补丁交付边界见 [ADR 0012](./docs/adr/0012-verified-patch-delivery.md)，第十三迭代的容器命令沙箱见 [ADR 0013](./docs/adr/0013-per-task-container-sandbox.md)。
+模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)，第十二迭代的补丁交付边界见 [ADR 0012](./docs/adr/0012-verified-patch-delivery.md)，第十三迭代的容器命令沙箱见 [ADR 0013](./docs/adr/0013-per-task-container-sandbox.md)，第十四迭代的公开快照边界见 [ADR 0014](./docs/adr/0014-static-redacted-showcase.md)。
 
 完整产品规划见 [AMOR-Coding-Agent项目实现方案.md](./AMOR-Coding-Agent项目实现方案.md)。

@@ -210,6 +210,27 @@ select.task-input { @apply appearance-auto; }
   color: rgb(253 230 138);
 }
 
+.showcase-panel {
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.025);
+}
+
+.showcase-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.55rem;
+  background: rgb(103 232 249);
+  padding: 0.55rem 0.8rem;
+  color: rgb(2 6 23);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.showcase-link:hover {
+  background: rgb(165 243 252);
+}
+
 .delivery-result-grid span {
   @apply mb-2 block text-xs text-muted-foreground;
 }

@@ -94,3 +94,19 @@ def test_web_rejects_public_listen_address(monkeypatch: pytest.MonkeyPatch) -> N
 
     with pytest.raises(SystemExit, match="loopback host"):
         main()
+
+
+def test_showcase_export_requires_an_explicit_experiment_and_confirmation() -> None:
+    arguments = build_parser().parse_args(
+        [
+            "export-showcase",
+            "--experiment",
+            "a" * 16,
+            "--title",
+            "AMOR public evidence",
+            "--confirm-public",
+        ]
+    )
+
+    assert arguments.experiment == "a" * 16
+    assert arguments.confirm_public is True

@@ -34,6 +34,42 @@ def test_artifact_api_returns_not_found_for_unlisted_paths(tmp_path: Path) -> No
     assert response.status_code == 404
 
 
+def test_showcase_api_requires_local_confirmation_and_serves_static_snapshot(
+    tmp_path: Path,
+) -> None:
+    create_experiment(tmp_path)
+    client = TestClient(create_app(artifacts_root=tmp_path, frontend_root=tmp_path / "missing"))
+    experiment_id = client.get("/api/experiments").json()["items"][0]["id"]
+    payload = {
+        "experiment_id": experiment_id,
+        "title": "AMOR 公开实验",
+        "confirm_public": True,
+    }
+
+    rejected = client.post(
+        "/api/showcases",
+        json=payload,
+        headers={"Origin": "https://attacker.example"},
+    )
+    assert rejected.status_code == 403
+
+    created = client.post(
+        "/api/showcases",
+        json=payload,
+        headers={"Origin": "http://127.0.0.1:8765"},
+    )
+    assert created.status_code == 201
+    result = created.json()
+    assert result["url"] == f"/showcases/{result['showcase_id']}/"
+    assert client.get("/api/showcases").json()["items"][0]["showcase_id"] == result["showcase_id"]
+
+    page = client.get(result["url"])
+    assert page.status_code == 200
+    assert "AMOR 公开实验" in page.text
+    assert "C:/private" not in page.text
+    assert "git_diff" not in page.text
+
+
 def test_web_app_serves_built_frontend_without_shadowing_api(tmp_path: Path) -> None:
     frontend = tmp_path / "frontend"
     frontend.mkdir()
