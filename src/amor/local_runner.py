@@ -4,6 +4,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Callable
 
 from amor.acceptance import AcceptancePlan
 from amor.benchmarks import BenchmarkLayout
@@ -46,6 +47,8 @@ def run_repository_task(
     planning_strategy: PlanningStrategy | str = PlanningStrategy.STRUCTURED,
     acceptance_plan: AcceptancePlan | None = None,
     acceptance_plan_path: Path | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    trace_listener: Callable[[dict[str, Any]], None] | None = None,
 ) -> RunReport:
     repository = repository.resolve()
     profile = RepositoryProfiler().profile(repository)
@@ -112,7 +115,7 @@ def run_repository_task(
         newline="\n",
     )
     trace_path = run_dir / "trace.jsonl"
-    trace = TraceRecorder(trace_path, task_id)
+    trace = TraceRecorder(trace_path, task_id, listener=trace_listener)
     trace.record(
         "verification_contract",
         AgentPhase.INITIALIZING,
@@ -147,6 +150,7 @@ def run_repository_task(
         context_strategy=context_strategy,
         context_budget_chars=context_budget_chars,
         planning_strategy=planning_strategy,
+        should_cancel=should_cancel,
     )
     state = orchestrator.run_until_final_verification()
     verifier = IndependentVerifier(BenchmarkLayout(project_root / "benchmarks"))
@@ -154,15 +158,22 @@ def run_repository_task(
     verification: VerificationResult | None = None
 
     while state.phase == AgentPhase.FINAL_VERIFYING:
+        if should_cancel is not None and should_cancel():
+            orchestrator.cancel()
+            break
         verification = verifier.verify(
             task,
             workspace,
             include_hidden_tests=False,
             structured_plan_path=resolved_plan_path,
+            should_cancel=should_cancel,
         )
         verification_history.append(verification)
         state.verification_attempts = len(verification_history)
         trace.record("verification", AgentPhase.FINAL_VERIFYING, verification)
+        if should_cancel is not None and should_cancel():
+            orchestrator.cancel()
+            break
         if verification.passed:
             orchestrator.machine.transition(AgentPhase.SUCCEEDED, "independent verifier passed")
             for step in state.plan:

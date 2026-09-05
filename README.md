@@ -2,7 +2,7 @@
 
 AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动的本地 Coding Agent。当前版本支持固定 Benchmark 演示，以及对干净的本地 Git 仓库运行自然语言修复任务。
 
-`v0.9.0` 新增独立只读验收规划器：实现 Agent 动手前，使用独立模型会话阅读现有源码和测试，生成待用户审批的不可变验收契约。执行 Agent 不能看到或修改契约文件，独立 Verifier 在工作区外执行结构化用例，失败结果会进入现有修复闭环。
+`v0.10.0` 将真实任务链路接入本地 Web 工作台：用户可在浏览器中创建任务、审阅并批准独立验收契约、实时观察 Agent 事件、取消运行，以及查看最终 Verifier 与 Git Diff。任务串行执行，API Key 仅从本地服务端环境变量读取，交互服务强制只监听回环地址。
 
 ## 当前可运行链路
 
@@ -35,19 +35,41 @@ npm run build
 cd ..
 ```
 
-随后用一个命令同时启动 Artifact API 和工作台：
+先在启动工作台的终端设置所需 Provider 的 API Key。Key 不会发送到浏览器、写入任务记录或保存在 `localStorage`：
+
+```powershell
+$env:OPENAI_API_KEY = "your-api-key"
+# 或：$env:DEEPSEEK_API_KEY = "your-api-key"
+```
+
+随后用一个命令同时启动本地任务 API、Artifact API 和工作台：
 
 ```powershell
 .venv\Scripts\amor web --artifacts artifacts
 ```
 
-浏览器访问 `http://127.0.0.1:8765/`。服务默认只监听本机回环地址，并且只读取 `artifacts/` 内由服务器发现的实验，不接受任意文件路径。工作台提供：
+浏览器访问 `http://127.0.0.1:8765/`。交互服务只允许监听 `127.0.0.1`、`localhost` 或 `::1`，不能通过参数改成公网地址。
+
+“真实任务”页签提供：
+
+- 输入本地 Git 仓库绝对路径、任务、已知验收条件和允许修改范围
+- 使用独立只读模型会话生成验收契约
+- 逐项审阅结构化用例、验证命令、证据文件和契约哈希
+- 人工批准后启动执行 Agent
+- 通过 SSE 实时展示状态变化、模型轮次、工具结果和 Verifier 事件
+- 协作式取消：队列任务立即取消；运行任务在当前模型请求或验证子进程的安全边界停止
+- 展示最终状态、Token、验证历史和 Git Diff
+- 刷新页面后从 `artifacts/jobs/` 恢复任务记录；服务重启时未完成任务会明确标记为中断
+
+“实验分析”页签继续提供：
 
 - 上下文策略与规划策略实验列表
 - 成功率、Token、工具调用和上下文指标对比
 - 每个任务的状态、轮次、工具调用与耗时
 - Verifier 检查、结构化计划、状态轨迹和 Git Diff
 - Fake Provider 的显式证据边界提示
+
+网页任务仍遵守 CLI 的全部边界：目标仓库必须已经提交且工作区干净，修改只发生在隔离 worktree 中，验证命令必须预先批准，成功后不会自动提交、推送或写回原仓库。当前版本仍在宿主机子进程中执行目标项目代码，因此不能部署为允许陌生用户提交仓库或命令的公网服务。
 
 前端开发模式下，在另一个终端进入 `web/` 运行 `npm run dev`；开发服务器会把 `/api` 转发到本机 `8765` 端口。
 
@@ -250,6 +272,12 @@ $env:OPENAI_API_KEY = "your-api-key"
 - `final-report.json`：最终状态、历次验证结果、diff 和运行元数据
 - `workspace/`：隔离后的目标仓库
 
+Web 任务还会写入：
+
+- `artifacts/jobs/<job-id>/job.json`：不含凭据的任务状态、审批信息和实时事件快照
+- `artifacts/plans/<plan-id>/`：验收契约、中文报告和规划轨迹
+- `artifacts/runs/<run-id>/`：执行报告、验证契约、轨迹和隔离 worktree
+
 ## 安全边界
 
 首个迭代已经实施以下约束：
@@ -275,6 +303,6 @@ docs/                   架构决策
 web/                    Vite + React 可观测工作台
 ```
 
-模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)。
+模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)。
 
 完整产品规划见 [AMOR-Coding-Agent项目实现方案.md](./AMOR-Coding-Agent项目实现方案.md)。

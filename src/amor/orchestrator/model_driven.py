@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any
+from typing import Any, Callable
 
 from amor.context import ContextManager, ContextStrategy
 from amor.domain import (
@@ -36,6 +36,7 @@ class ModelDrivenOrchestrator:
         context_strategy: ContextStrategy | str = ContextStrategy.SEARCH_FIRST,
         context_budget_chars: int = 40_000,
         planning_strategy: PlanningStrategy | str = PlanningStrategy.STRUCTURED,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> None:
         self.task = task
         self.profile = profile
@@ -58,8 +59,12 @@ class ModelDrivenOrchestrator:
         self._schemas: list[dict[str, Any]] = []
         self._pending_verification_call_id: str | None = None
         self._soft_budget_warned = False
+        self._should_cancel = should_cancel or (lambda: False)
 
     def run_until_final_verification(self) -> AgentState:
+        if self._should_cancel():
+            self.cancel()
+            return self.state
         if not self._initialized:
             self._transition(AgentPhase.PROFILING_REPO, "repository profile is ready")
             self.trace.record("repository_profile", self.state.phase, self.profile)
@@ -85,6 +90,9 @@ class ModelDrivenOrchestrator:
             )
 
         while self.state.round < self.task.limits.max_rounds:
+            if self._should_cancel():
+                self.cancel()
+                return self.state
             if time.monotonic() - self._started_monotonic > self.task.limits.max_seconds:
                 self._transition(AgentPhase.BUDGET_EXHAUSTED, "task time budget was exhausted")
                 return self.state
@@ -129,6 +137,9 @@ class ModelDrivenOrchestrator:
             for name, value in turn.usage.items():
                 self.state.token_usage[name] = self.state.token_usage.get(name, 0) + value
             self._previous_response_id = turn.response_id
+            if self._should_cancel():
+                self.cancel()
+                return self.state
             if self._total_tokens() > self.task.limits.max_total_tokens:
                 overrun = self._total_tokens() - self.task.limits.max_total_tokens
                 self.state.budget_overrun_tokens = max(
@@ -157,6 +168,9 @@ class ModelDrivenOrchestrator:
 
             tool_outputs: list[dict[str, Any]] = []
             for call in turn.tool_calls:
+                if self._should_cancel():
+                    self.cancel()
+                    return self.state
                 no_progress_reason = self.progress_guard.observe_call(call.name, call.arguments)
                 if no_progress_reason:
                     self._stop_for_no_progress(no_progress_reason)
@@ -211,6 +225,9 @@ class ModelDrivenOrchestrator:
 
     def continue_after_verification(self, verification: VerificationResult) -> AgentState:
         """Return deterministic verifier feedback to the same model session."""
+        if self._should_cancel():
+            self.cancel()
+            return self.state
         if self.state.phase != AgentPhase.FINAL_VERIFYING:
             raise RuntimeError("verification feedback requires FINAL_VERIFYING state")
         if not self._pending_verification_call_id:
@@ -250,6 +267,19 @@ class ModelDrivenOrchestrator:
         ]
         self._pending_verification_call_id = None
         return self.run_until_final_verification()
+
+    def cancel(self) -> None:
+        if self.state.phase in {
+            AgentPhase.SUCCEEDED,
+            AgentPhase.FAILED,
+            AgentPhase.BLOCKED,
+            AgentPhase.BUDGET_EXHAUSTED,
+            AgentPhase.CANCELLED,
+        }:
+            return
+        self.state.latest_error_summary = "cancelled by user"
+        self.trace.record("cancellation_requested", self.state.phase, {})
+        self._transition(AgentPhase.CANCELLED, "user requested cancellation")
 
     def _dispatch(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         try:

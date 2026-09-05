@@ -9,19 +9,30 @@ class InvalidTransition(RuntimeError):
 
 
 ALLOWED_TRANSITIONS: dict[AgentPhase, set[AgentPhase]] = {
-    AgentPhase.INITIALIZING: {AgentPhase.PROFILING_REPO, AgentPhase.FAILED},
+    AgentPhase.INITIALIZING: {
+        AgentPhase.PROFILING_REPO,
+        AgentPhase.FAILED,
+        AgentPhase.CANCELLED,
+    },
     AgentPhase.PROFILING_REPO: {
         AgentPhase.PLANNING,
         AgentPhase.EXPLORING,
         AgentPhase.FAILED,
+        AgentPhase.CANCELLED,
     },
-    AgentPhase.PLANNING: {AgentPhase.EXPLORING, AgentPhase.BLOCKED, AgentPhase.FAILED},
+    AgentPhase.PLANNING: {
+        AgentPhase.EXPLORING,
+        AgentPhase.BLOCKED,
+        AgentPhase.FAILED,
+        AgentPhase.CANCELLED,
+    },
     AgentPhase.EXPLORING: {
         AgentPhase.EDITING,
         AgentPhase.VALIDATING,
         AgentPhase.BLOCKED,
         AgentPhase.BUDGET_EXHAUSTED,
         AgentPhase.FAILED,
+        AgentPhase.CANCELLED,
     },
     AgentPhase.EDITING: {
         AgentPhase.EXPLORING,
@@ -29,6 +40,7 @@ ALLOWED_TRANSITIONS: dict[AgentPhase, set[AgentPhase]] = {
         AgentPhase.BLOCKED,
         AgentPhase.FAILED,
         AgentPhase.BUDGET_EXHAUSTED,
+        AgentPhase.CANCELLED,
     },
     AgentPhase.VALIDATING: {
         AgentPhase.DIAGNOSING,
@@ -38,6 +50,7 @@ ALLOWED_TRANSITIONS: dict[AgentPhase, set[AgentPhase]] = {
         AgentPhase.BLOCKED,
         AgentPhase.FAILED,
         AgentPhase.BUDGET_EXHAUSTED,
+        AgentPhase.CANCELLED,
     },
     AgentPhase.DIAGNOSING: {
         AgentPhase.EXPLORING,
@@ -45,11 +58,13 @@ ALLOWED_TRANSITIONS: dict[AgentPhase, set[AgentPhase]] = {
         AgentPhase.BLOCKED,
         AgentPhase.FAILED,
         AgentPhase.BUDGET_EXHAUSTED,
+        AgentPhase.CANCELLED,
     },
     AgentPhase.FINAL_VERIFYING: {
         AgentPhase.DIAGNOSING,
         AgentPhase.SUCCEEDED,
         AgentPhase.FAILED,
+        AgentPhase.CANCELLED,
     },
 }
 

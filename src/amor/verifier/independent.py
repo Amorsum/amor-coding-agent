@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 from amor.benchmarks.loader import BenchmarkLayout, load_hidden_suite
 from amor.domain import TaskSpec, VerificationCheck, VerificationResult
@@ -24,6 +25,7 @@ class IndependentVerifier:
         *,
         include_hidden_tests: bool = True,
         structured_plan_path: Path | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> VerificationResult:
         checks: list[VerificationCheck] = []
 
@@ -43,9 +45,28 @@ class IndependentVerifier:
         checks.append(self._static_check(workspace.root, changed_files))
 
         for index, command in enumerate(task.visible_validation_commands, start=1):
-            checks.append(self._run_check(f"visible_tests_{index}", command, workspace.root, task))
+            if should_cancel is not None and should_cancel():
+                checks.append(
+                    VerificationCheck(
+                        name=f"visible_tests_{index}",
+                        passed=False,
+                        summary="verification cancelled by user",
+                    )
+                )
+                break
+            checks.append(
+                self._run_check(
+                    f"visible_tests_{index}",
+                    command,
+                    workspace.root,
+                    task,
+                    should_cancel,
+                )
+            )
+            if should_cancel is not None and should_cancel():
+                break
 
-        if structured_plan_path is not None:
+        if structured_plan_path is not None and not (should_cancel and should_cancel()):
             plan_path = structured_plan_path.resolve()
             try:
                 plan_path.relative_to(workspace.root.resolve())
@@ -61,6 +82,7 @@ class IndependentVerifier:
                         ],
                         workspace.root,
                         task,
+                        should_cancel,
                     )
                 )
             else:
@@ -72,7 +94,7 @@ class IndependentVerifier:
                     )
                 )
 
-        if not include_hidden_tests:
+        if not include_hidden_tests or (should_cancel and should_cancel()):
             passed = all(check.passed for check in checks)
             return VerificationResult(
                 passed=passed,
@@ -108,7 +130,15 @@ class IndependentVerifier:
             str(hidden_suite),
             "-v",
         ]
-        checks.append(self._run_check("hidden_tests", hidden_command, workspace.root, task))
+        checks.append(
+            self._run_check(
+                "hidden_tests",
+                hidden_command,
+                workspace.root,
+                task,
+                should_cancel,
+            )
+        )
 
         passed = all(check.passed for check in checks)
         return VerificationResult(
@@ -123,6 +153,7 @@ class IndependentVerifier:
         command: list[str],
         cwd: Path,
         task: TaskSpec,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> VerificationCheck:
         started = time.perf_counter()
         allowed_environment_names = {
@@ -143,18 +174,45 @@ class IndependentVerifier:
         }
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         try:
-            process = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 cwd=cwd,
                 env=environment,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                capture_output=True,
-                timeout=task.limits.max_seconds,
-                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-            combined = (process.stdout + process.stderr).strip()
+            deadline = time.monotonic() + task.limits.max_seconds
+            while True:
+                try:
+                    stdout, stderr = process.communicate(timeout=0.1)
+                    break
+                except subprocess.TimeoutExpired:
+                    if should_cancel is not None and should_cancel():
+                        process.terminate()
+                        try:
+                            process.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.communicate()
+                        return VerificationCheck(
+                            name=name,
+                            passed=False,
+                            summary="verification cancelled by user",
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                        )
+                    if time.monotonic() >= deadline:
+                        process.kill()
+                        process.communicate()
+                        return VerificationCheck(
+                            name=name,
+                            passed=False,
+                            summary="verification timed out",
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                        )
+            combined = (stdout + stderr).strip()
             max_chars = min(task.limits.max_output_chars, 4_000)
             if len(combined) > max_chars:
                 combined = combined[:max_chars] + "\n... <verifier output truncated>"
@@ -165,11 +223,11 @@ class IndependentVerifier:
                 summary=summary,
                 duration_ms=int((time.perf_counter() - started) * 1000),
             )
-        except subprocess.TimeoutExpired:
+        except OSError as exc:
             return VerificationCheck(
                 name=name,
                 passed=False,
-                summary="verification timed out",
+                summary=f"verification command could not start: {exc}",
                 duration_ms=int((time.perf_counter() - started) * 1000),
             )
 

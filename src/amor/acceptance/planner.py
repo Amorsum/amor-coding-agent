@@ -5,7 +5,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from amor.acceptance.contract import write_acceptance_plan
 from amor.acceptance.models import AcceptancePlan, AcceptanceProposal
@@ -38,6 +38,8 @@ def run_acceptance_planning(
     max_rounds: int = 12,
     max_total_tokens: int = 40_000,
     context_budget_chars: int = 40_000,
+    should_cancel: Callable[[], bool] | None = None,
+    trace_listener: Callable[[dict[str, Any]], None] | None = None,
 ) -> AcceptancePlan:
     if not instruction.strip():
         raise ValueError("task instruction must not be empty")
@@ -63,7 +65,11 @@ def run_acceptance_planning(
     plan_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     plan_root = artifacts_root.resolve() / plan_id
     workspace = WorkspaceManager().create_from_repository(repository, plan_root)
-    trace = TraceRecorder(plan_root / "planner-trace.jsonl", f"plan_{plan_id}")
+    trace = TraceRecorder(
+        plan_root / "planner-trace.jsonl",
+        f"plan_{plan_id}",
+        listener=trace_listener,
+    )
     trace.record(
         "acceptance_planning_started",
         AgentPhase.INITIALIZING,
@@ -101,6 +107,8 @@ def run_acceptance_planning(
     started = time.monotonic()
 
     for round_number in range(1, max_rounds + 1):
+        if should_cancel is not None and should_cancel():
+            raise RuntimeError("acceptance planning cancelled")
         turn = provider.respond(
             instructions=_instructions(instruction, acceptance_criteria, token_usage, max_total_tokens),
             input_data=input_data,
@@ -108,6 +116,8 @@ def run_acceptance_planning(
             previous_response_id=previous_response_id,
         )
         previous_response_id = turn.response_id
+        if should_cancel is not None and should_cancel():
+            raise RuntimeError("acceptance planning cancelled")
         for name, value in turn.usage.items():
             token_usage[name] = token_usage.get(name, 0) + value
         trace.record(
@@ -129,6 +139,8 @@ def run_acceptance_planning(
 
         outputs: list[dict[str, Any]] = []
         for call in turn.tool_calls:
+            if should_cancel is not None and should_cancel():
+                raise RuntimeError("acceptance planning cancelled")
             no_progress = guard.observe_call(call.name, call.arguments)
             if no_progress:
                 raise RuntimeError(no_progress)

@@ -1,4 +1,6 @@
-from amor.cli import _resolved_cost_currency, build_parser
+import pytest
+
+from amor.cli import _resolved_cost_currency, build_parser, main
 
 
 def test_run_accepts_deepseek_provider() -> None:
@@ -83,3 +85,10 @@ def test_run_can_use_a_frozen_contract_without_repeating_task_flags() -> None:
     assert arguments.task is None
     assert arguments.allow == []
     assert arguments.approve_contract
+
+
+def test_web_rejects_public_listen_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.argv", ["amor", "web", "--host", "0.0.0.0"])
+
+    with pytest.raises(SystemExit, match="loopback host"):
+        main()

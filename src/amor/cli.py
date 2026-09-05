@@ -16,7 +16,7 @@ from amor.context import SUPPORTED_CONTEXT_STRATEGIES, ContextStrategy
 from amor.local_runner import run_repository_task
 from amor.orchestrator import SUPPORTED_PLANNING_STRATEGIES, PlanningStrategy
 from amor.profiler import RepositoryProfiler
-from amor.providers import DeepSeekResponsesProvider, ModelProvider, OpenAIResponsesProvider, ProviderError
+from amor.providers import ProviderError, build_api_provider
 from amor.runner import DEFAULT_TASK_IDS, run_demo
 from amor.workspace.manager import WorkspaceError
 
@@ -191,7 +191,7 @@ def main() -> int:
             validation_commands = [
                 _parse_command_json(value) for value in arguments.validation_json
             ] or None
-            provider = _build_api_provider(
+            provider = build_api_provider(
                 arguments.provider,
                 model=arguments.model,
                 base_url=arguments.base_url,
@@ -259,7 +259,7 @@ def main() -> int:
                 validation_commands = [
                     _parse_command_json(value) for value in arguments.validation_json
                 ]
-            provider = _build_api_provider(
+            provider = build_api_provider(
                 arguments.provider,
                 model=arguments.model,
                 base_url=arguments.base_url,
@@ -311,7 +311,7 @@ def main() -> int:
             if not benchmark_model:
                 raise SystemExit(f"--model is required for {arguments.provider}")
             try:
-                _build_api_provider(
+                build_api_provider(
                     arguments.provider,
                     model=benchmark_model,
                     base_url=arguments.base_url,
@@ -319,7 +319,7 @@ def main() -> int:
                 )
             except ProviderError as exc:
                 raise SystemExit(str(exc)) from exc
-            provider_factory = lambda task, attempt: _build_api_provider(
+            provider_factory = lambda task, attempt: build_api_provider(
                 arguments.provider,
                 model=benchmark_model,
                 base_url=arguments.base_url,
@@ -371,7 +371,7 @@ def main() -> int:
             if not experiment_model:
                 raise SystemExit(f"--model is required for {arguments.provider}")
             try:
-                _build_api_provider(
+                build_api_provider(
                     arguments.provider,
                     model=experiment_model,
                     base_url=arguments.base_url,
@@ -379,7 +379,7 @@ def main() -> int:
                 )
             except ProviderError as exc:
                 raise SystemExit(str(exc)) from exc
-            provider_factory = lambda task, attempt: _build_api_provider(
+            provider_factory = lambda task, attempt: build_api_provider(
                 arguments.provider,
                 model=experiment_model,
                 base_url=arguments.base_url,
@@ -442,6 +442,8 @@ def main() -> int:
     if arguments.command == "web":
         if arguments.port < 1 or arguments.port > 65535:
             raise SystemExit("--port must be between 1 and 65535")
+        if arguments.host not in {"127.0.0.1", "localhost", "::1"}:
+            raise SystemExit("interactive workbench may only listen on a loopback host")
         from amor.web import serve_dashboard
 
         serve_dashboard(
@@ -459,28 +461,6 @@ def _parse_command_json(value: str) -> list[str]:
     if not isinstance(parsed, list) or not parsed or not all(isinstance(item, str) and item for item in parsed):
         raise ValueError("each --validation-json value must be a non-empty JSON array of strings")
     return parsed
-
-
-def _build_api_provider(
-    provider_name: str,
-    *,
-    model: str,
-    base_url: str | None,
-    timeout_seconds: int = 120,
-    max_output_tokens: int,
-) -> ModelProvider:
-    provider_class = {
-        "openai-responses": OpenAIResponsesProvider,
-        "deepseek-responses": DeepSeekResponsesProvider,
-    }.get(provider_name)
-    if provider_class is None:
-        raise ProviderError(f"unsupported API provider: {provider_name}")
-    return provider_class.from_environment(
-        model=model,
-        base_url=base_url,
-        timeout_seconds=timeout_seconds,
-        max_output_tokens=max_output_tokens,
-    )
 
 
 def _resolved_cost_currency(arguments: argparse.Namespace) -> str | None:

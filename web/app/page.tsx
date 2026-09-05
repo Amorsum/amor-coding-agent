@@ -13,6 +13,7 @@ import {
   FlaskConical,
   GitCompareArrows,
   ListTree,
+  PlayCircle,
   RefreshCw,
   Route,
   ShieldCheck,
@@ -40,6 +41,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { TaskWorkbench } from '@/app/task-workbench';
 
 type ExperimentListItem = {
   id: string;
@@ -139,6 +141,7 @@ const metricRows = [
 ] as const;
 
 export default function Home() {
+  const [surface, setSurface] = useState<'tasks' | 'experiments'>('tasks');
   const [experiments, setExperiments] = useState<ExperimentListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [experiment, setExperiment] = useState<ExperimentDetail | null>(null);
@@ -215,6 +218,7 @@ export default function Home() {
             setSelectedAttempt(null);
             setAttemptDetail(null);
             setSelectedId(match.id);
+            setSurface('experiments');
             return { selected: match.experiment_id, dimension: match.dimension };
           },
         },
@@ -283,22 +287,48 @@ export default function Home() {
           <div>
             <div className="flex items-baseline gap-2">
               <h1 className="text-base font-semibold tracking-[0.16em]">AMOR</h1>
-              <span className="text-xs text-muted-foreground">v0.7.0</span>
+              <span className="text-xs text-muted-foreground">v0.10.0</span>
             </div>
-            <p className="text-xs text-muted-foreground">Agent 可观测工作台</p>
+            <p className="text-xs text-muted-foreground">可信任务工作台</p>
           </div>
         </div>
+        <nav className="hidden items-center rounded-lg border border-white/8 bg-black/15 p-1 sm:flex" aria-label="工作台页面">
+          <button
+            type="button"
+            className="surface-tab"
+            data-active={surface === 'tasks'}
+            onClick={() => setSurface('tasks')}
+          >
+            <PlayCircle className="size-3.5" />真实任务
+          </button>
+          <button
+            type="button"
+            className="surface-tab"
+            data-active={surface === 'experiments'}
+            onClick={() => setSurface('experiments')}
+          >
+            <FlaskConical className="size-3.5" />实验分析
+          </button>
+        </nav>
         <div className="flex items-center gap-3">
           <span className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
             <span className="size-2 rounded-full bg-emerald-400 shadow-[0_0_12px_rgb(52_211_153/70%)]" />
-            本地只读模式
+            {surface === 'tasks' ? '本地受控执行' : '本地只读分析'}
           </span>
-          <Button variant="outline" size="sm" onClick={() => void loadExperiments()}>
-            <RefreshCw data-icon="inline-start" />刷新
-          </Button>
+          {surface === 'experiments' && (
+            <Button variant="outline" size="sm" onClick={() => void loadExperiments()}>
+              <RefreshCw data-icon="inline-start" />刷新
+            </Button>
+          )}
         </div>
       </header>
 
+      <div className="flex border-b border-white/8 p-2 sm:hidden">
+        <button type="button" className="surface-tab flex-1 justify-center" data-active={surface === 'tasks'} onClick={() => setSurface('tasks')}><PlayCircle className="size-3.5" />真实任务</button>
+        <button type="button" className="surface-tab flex-1 justify-center" data-active={surface === 'experiments'} onClick={() => setSurface('experiments')}><FlaskConical className="size-3.5" />实验分析</button>
+      </div>
+
+      {surface === 'tasks' ? <TaskWorkbench /> : (
       <div className="workbench-grid">
         <aside className="experiment-rail">
           <div className="section-kicker">
@@ -513,6 +543,7 @@ export default function Home() {
           )}
         </aside>
       </div>
+      )}
     </main>
   );
 }
