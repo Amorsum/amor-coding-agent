@@ -47,6 +47,32 @@ class PolicyDecision(StrEnum):
     DENIED = "denied"
 
 
+class SandboxMode(StrEnum):
+    HOST = "host"
+    DOCKER = "docker"
+
+
+class SandboxConfig(BaseModel):
+    """Execution boundary for target-project commands."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    mode: SandboxMode = SandboxMode.HOST
+    image: str = Field(default="python:3.12-slim", min_length=1, max_length=300)
+    cpus: float = Field(default=1.0, gt=0, le=16)
+    memory_mb: int = Field(default=512, ge=128, le=32_768)
+    pids_limit: int = Field(default=128, ge=16, le=4_096)
+    tmpfs_mb: int = Field(default=64, ge=16, le=4_096)
+    workspace_growth_mb: int = Field(default=256, ge=16, le=32_768)
+    network_disabled: bool = True
+
+    @model_validator(mode="after")
+    def docker_never_enables_network(self) -> "SandboxConfig":
+        if self.mode == SandboxMode.DOCKER and not self.network_disabled:
+            raise ValueError("Docker sandbox networking must remain disabled")
+        return self
+
+
 class RunLimits(BaseModel):
     max_rounds: int = Field(default=8, ge=1, le=100)
     max_seconds: int = Field(default=120, ge=1, le=3600)
@@ -73,6 +99,7 @@ class TaskSpec(BaseModel):
     expected_status: TerminalStatus = TerminalStatus.SUCCEEDED
     required_evidence_paths: list[str] = Field(default_factory=list)
     limits: RunLimits = Field(default_factory=RunLimits)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
     @model_validator(mode="after")
     def has_one_repository_source(self) -> "TaskSpec":

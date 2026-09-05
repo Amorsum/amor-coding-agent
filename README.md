@@ -2,7 +2,7 @@
 
 AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动的本地 Coding Agent。当前版本支持固定 Benchmark 演示，以及对干净的本地 Git 仓库运行自然语言修复任务。
 
-`v0.12.0` 增加已验收补丁的安全交付：成功任务可以在新的独立 worktree 中创建本地分支、应用同一 SHA-256 补丁、重新运行相同 Verifier，并可选生成本地 commit。原仓库当前分支与工作副本不会被切换或修改，也不会自动推送远端。
+`v0.13.0` 增加每任务 Docker 命令沙箱：Agent 验证、独立 Verifier、结构化外部验收和隐藏测试可在同一个无网络容器边界中执行，并限制 CPU、内存、进程数、临时盘、工作区增长和运行时间。Docker 不可用时会拒绝启动，不会静默降级到宿主机；用户仍可显式选择兼容模式。
 
 ## 当前可运行链路
 
@@ -22,6 +22,12 @@ python -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 .venv\Scripts\python -m pytest
 .venv\Scripts\amor demo
+```
+
+真实仓库默认使用 Docker 沙箱。先启动 Docker Desktop，并显式准备固定基础镜像；AMOR 运行任务时不会自动联网拉取镜像：
+
+```powershell
+docker pull python:3.12-slim
 ```
 
 ## 本地 Web 工作台
@@ -59,6 +65,8 @@ $env:OPENAI_API_KEY = "your-api-key"
 - 直接编辑验收文本、允许路径和验证命令；结构化外部用例保持只读
 - 查看契约修订来源、说明、时间和哈希；任何修改都会使旧审批失效
 - 人工批准后启动执行 Agent
+- 在 Docker 无网络沙箱和宿主机兼容模式之间显式选择；页面会展示 Docker 引擎与镜像就绪状态
+- Docker 模式限制为 1 CPU、512 MB 内存、128 个进程、64 MB 临时盘和 256 MB 工作区增长，并支持超时/取消强制终止
 - 通过 SSE 实时展示状态变化、模型轮次、工具结果和 Verifier 事件
 - 协作式取消：队列任务立即取消；运行任务在当前模型请求或验证子进程的安全边界停止
 - 展示最终状态、Token、验证历史和 Git Diff
@@ -75,7 +83,7 @@ $env:OPENAI_API_KEY = "your-api-key"
 - Verifier 检查、结构化计划、状态轨迹和 Git Diff
 - Fake Provider 的显式证据边界提示
 
-网页任务仍遵守 CLI 的全部边界：目标仓库必须已经提交且工作区干净，Agent 修改和补丁交付分别发生在隔离 worktree 中，验证命令必须预先批准。只有用户再次确认后才会创建新的本地分支并可选提交；原仓库当前分支不会切换，系统也不会自动推送。当前版本仍在宿主机子进程中执行目标项目代码，因此不能部署为允许陌生用户提交仓库或命令的公网服务。
+网页任务仍遵守 CLI 的全部边界：目标仓库必须已经提交且工作区干净，Agent 修改和补丁交付分别发生在隔离 worktree 中，验证命令必须预先批准。Docker 模式只把目标项目命令放入容器；仓库分析、文件工具、Git 工作区管理和模型调用仍由本地 AMOR 服务控制。只有用户再次确认后才会创建新的本地分支并可选提交；原仓库当前分支不会切换，系统也不会自动推送。当前工作台仍只允许本机访问，不能因为加入容器就直接作为任意仓库公网执行服务。
 
 前端开发模式下，在另一个终端进入 `web/` 运行 `npm run dev`；开发服务器会把 `/api` 转发到本机 `8765` 端口。
 
@@ -224,6 +232,7 @@ $env:OPENAI_API_KEY = "your-api-key"
   --contract "artifacts\plans\<plan-id>\acceptance-plan.json" `
   --approve-contract `
   --model "your-implementation-model-id" `
+  --sandbox docker `
   --confirm-send-code
 ```
 
@@ -252,6 +261,7 @@ $env:OPENAI_API_KEY = "your-api-key"
   --max-tokens 100000 `
   --max-verification-retries 2 `
   --max-output-tokens 4000 `
+  --sandbox docker `
   --confirm-send-code
 ```
 
@@ -263,7 +273,9 @@ $env:OPENAI_API_KEY = "your-api-key"
 - 可以重复提供 `--validation-json`、`--accept` 和 `--allow`。
 - `--confirm-send-code` 表示你确认相关代码片段和测试输出会发送给配置的模型服务。
 - OpenAI 可通过 `--base-url` 或 `OPENAI_BASE_URL` 覆盖地址；DeepSeek 对应 `--base-url` 或 `DEEPSEEK_BASE_URL`。
-- 当前仍使用本机子进程执行测试，不要对恶意或来源不明的仓库运行。
+- `--sandbox docker` 是真实仓库的默认值；Docker 引擎未运行或镜像未提前准备时会失败关闭，不会自动回退或拉取镜像。
+- Docker 模式使用 `--network none`、只读容器根文件系统、能力移除和资源限额；只有隔离 worktree 可写。需要兼容尚未容器化的工具链时可显式使用 `--sandbox host`，但它不提供容器级隔离。
+- 可用 `--sandbox-cpus`、`--sandbox-memory-mb`、`--sandbox-pids`、`--sandbox-tmpfs-mb` 和 `--sandbox-workspace-growth-mb` 调整资源边界。
 - 验证成功后，补丁仍只保存在产物目录的隔离 `workspace/` 中，不会自动提交或应用回原仓库。
 - 验收规划器与执行 Agent 使用独立 Provider 会话；两阶段各自计入你的 API 用量。
 - 执行 Agent 只收到验收条件，不会获得工作区外的结构化用例文件；Verifier 失败时才把可见的失败摘要反馈给 Agent。
@@ -295,12 +307,13 @@ Web 任务还会写入：
 - 验证命令使用参数数组执行且必须与白名单完全匹配，不通过 shell。
 - Benchmark 隐藏测试位于目标工作区之外，由独立 Verifier 执行；真实项目只运行用户批准的验证命令。
 
-当前隔离仍以本机子进程和 Git worktree 为基础，不等同于容器安全沙盒；不应对不受信任的第三方仓库开放。
+真实任务默认在每任务 Docker 容器中执行目标项目命令，容器禁网且不挂载 API Key、用户主目录或 Docker socket。文件检索与补丁仍由宿主 AMOR 进程在隔离 worktree 内完成，并受路径策略约束。宿主机兼容模式只适合受信任仓库。即使使用容器，当前本地路径选择、Provider 凭据和服务访问模型也不满足多租户公网要求。
 
 ## 项目结构
 
 ```text
 src/amor/               核心实现
+src/amor/execution/     宿主机与 Docker 命令执行边界
 src/amor/web/           本地任务 API、Artifact API 与静态工作台托管
 benchmarks/fixtures/    示例目标仓库模板
 benchmarks/tasks/       Agent 可见任务规格
@@ -310,6 +323,6 @@ docs/                   架构决策
 web/                    Vite + React 可观测工作台
 ```
 
-模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)，第十二迭代的补丁交付边界见 [ADR 0012](./docs/adr/0012-verified-patch-delivery.md)。
+模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)，第十二迭代的补丁交付边界见 [ADR 0012](./docs/adr/0012-verified-patch-delivery.md)，第十三迭代的容器命令沙箱见 [ADR 0013](./docs/adr/0013-per-task-container-sandbox.md)。
 
 完整产品规划见 [AMOR-Coding-Agent项目实现方案.md](./AMOR-Coding-Agent项目实现方案.md)。

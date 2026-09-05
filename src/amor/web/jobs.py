@@ -22,8 +22,8 @@ from amor.acceptance import (
 )
 from amor.context import ContextStrategy
 from amor.delivery import DeliveryReport, deliver_verified_patch, patch_digest
-from amor.domain import RunLimits, RunReport
-from amor.domain import TaskSpec
+from amor.domain import RunLimits, RunReport, SandboxConfig, TaskSpec
+from amor.execution import docker_runtime_status
 from amor.local_runner import run_repository_task
 from amor.orchestrator import PlanningStrategy
 from amor.profiler import RepositoryProfiler
@@ -129,6 +129,7 @@ class ExecutionRequest(BaseModel):
     context_budget_chars: int = Field(default=40_000, ge=1_000, le=1_000_000)
     context_strategy: Literal["broad", "search-first"] = "search-first"
     planning_strategy: Literal["direct", "structured"] = "structured"
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     confirm_send_code: Literal[True]
 
 
@@ -340,6 +341,7 @@ class TaskJobManager:
             "max_concurrent_jobs": 1,
             "working_directory": str(Path.cwd().resolve()),
             "providers": provider_configuration(),
+            "docker": docker_runtime_status(),
         }
 
     def list_jobs(self) -> list[dict[str, Any]]:
@@ -762,6 +764,7 @@ class TaskJobManager:
                 acceptance_plan_path=self.artifacts_root / managed.snapshot.plan_artifact,
                 should_cancel=managed.cancel_event.is_set,
                 trace_listener=self._trace_listener(job_id),
+                sandbox=execution.sandbox,
             )
             with self._lock:
                 managed.snapshot.run = _safe_report(report)
@@ -914,6 +917,25 @@ class TaskJobManager:
                         "failure_category": payload.get("failure_category"),
                     }
                     message = "独立 Verifier 已完成一次验收"
+                elif kind == "sandbox_configured":
+                    safe_payload = {
+                        key: payload.get(key)
+                        for key in (
+                            "mode",
+                            "image",
+                            "cpus",
+                            "memory_mb",
+                            "pids_limit",
+                            "tmpfs_mb",
+                            "workspace_growth_mb",
+                            "network_disabled",
+                        )
+                    }
+                    message = (
+                        "目标项目命令将在 Docker 无网络沙箱中执行"
+                        if payload.get("mode") == "docker"
+                        else "目标项目命令使用宿主机兼容模式"
+                    )
                 else:
                     return
             with self._lock:

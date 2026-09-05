@@ -186,6 +186,30 @@ select.task-input { @apply appearance-auto; }
   @apply min-w-0 rounded-lg border border-white/8 bg-black/15 p-3;
 }
 
+.sandbox-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  border: 1px solid rgb(255 255 255 / 0.08);
+  border-radius: 0.65rem;
+  padding: 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.sandbox-note.ready {
+  border-color: rgb(52 211 153 / 0.24);
+  background: rgb(52 211 153 / 0.06);
+  color: rgb(167 243 208);
+}
+
+.sandbox-note.unavailable,
+.sandbox-note.warning {
+  border-color: rgb(252 211 77 / 0.24);
+  background: rgb(252 211 77 / 0.05);
+  color: rgb(253 230 138);
+}
+
 .delivery-result-grid span {
   @apply mb-2 block text-xs text-muted-foreground;
 }

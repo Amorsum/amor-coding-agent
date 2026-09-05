@@ -125,6 +125,7 @@ def test_local_web_job_plans_waits_for_approval_and_runs(tmp_path: Path) -> None
             provider=kwargs["provider_name"],
             model=kwargs["model"],
             limits=kwargs["limits"],
+            sandbox=kwargs["sandbox"],
         )
         state = AgentState(task_id=task.task_id, phase=AgentPhase.SUCCEEDED)
         verification = VerificationResult(
@@ -224,6 +225,16 @@ def test_local_web_job_plans_waits_for_approval_and_runs(tmp_path: Path) -> None
             "contract_sha256": planned["plan"]["contract_sha256"],
             "provider": "openai-responses",
             "model": "implementation-model",
+            "sandbox": {
+                "mode": "docker",
+                "image": "python:3.12-slim",
+                "cpus": 1,
+                "memory_mb": 512,
+                "pids_limit": 128,
+                "tmpfs_mb": 64,
+                "workspace_growth_mb": 256,
+                "network_disabled": True,
+            },
             "confirm_send_code": True,
         }
         stale_approval = {**approval, "contract_sha256": "0" * 64}
@@ -243,6 +254,7 @@ def test_local_web_job_plans_waits_for_approval_and_runs(tmp_path: Path) -> None
         assert response.status_code == 202
         completed = wait_for_status(client, job_id, "SUCCEEDED")
         assert completed["run"]["verification"]["passed"] is True
+        assert completed["run"]["task"]["sandbox"]["mode"] == "docker"
         assert any(event["kind"] == "tool" for event in completed["events"])
         assert client.get("/api/jobs").json()["items"][0]["events"] == []
 

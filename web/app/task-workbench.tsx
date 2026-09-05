@@ -7,6 +7,7 @@ import {
   CircleAlert,
   ClipboardCheck,
   Code2,
+  Container,
   FileDiff,
   FolderGit2,
   GitBranch,
@@ -48,6 +49,13 @@ type RuntimeInfo = {
   max_concurrent_jobs: number;
   working_directory?: string;
   providers: Record<ProviderName, boolean>;
+  docker: {
+    cli_available: boolean;
+    engine_available: boolean;
+    image_available: boolean;
+    image: string;
+    reason?: string | null;
+  };
 };
 
 type PythonCase = {
@@ -87,6 +95,18 @@ type VerificationCheck = { name: string; passed: boolean; summary: string; durat
 type RunResult = {
   run_id: string;
   final_status: string;
+  task?: {
+    sandbox?: {
+      mode: 'host' | 'docker';
+      image: string;
+      cpus: number;
+      memory_mb: number;
+      pids_limit: number;
+      tmpfs_mb: number;
+      workspace_growth_mb: number;
+      network_disabled: boolean;
+    };
+  };
   git_diff: string;
   state: {
     phase: string;
@@ -686,10 +706,13 @@ function ContractReview({
   const [maxTokens, setMaxTokens] = useState('100000');
   const [maxSeconds, setMaxSeconds] = useState('900');
   const [retries, setRetries] = useState('2');
+  const [sandboxMode, setSandboxMode] = useState<'docker' | 'host'>('docker');
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [editing, setEditing] = useState(false);
   const providerConfigured = runtime?.providers[provider] ?? false;
+  const dockerReady = Boolean(runtime?.docker.engine_available && runtime?.docker.image_available);
+  const sandboxReady = sandboxMode === 'host' || dockerReady;
 
   const approve = async () => {
     setSubmitting(true);
@@ -704,6 +727,16 @@ function ContractReview({
           max_tokens: Number(maxTokens),
           max_seconds: Number(maxSeconds),
           max_verification_retries: Number(retries),
+          sandbox: {
+            mode: sandboxMode,
+            image: runtime?.docker.image ?? 'python:3.12-slim',
+            cpus: 1,
+            memory_mb: 512,
+            pids_limit: 128,
+            tmpfs_mb: 64,
+            workspace_growth_mb: 256,
+            network_disabled: true,
+          },
           confirm_send_code: confirmed,
         }),
       });
@@ -770,13 +803,32 @@ function ContractReview({
               <input className="task-input font-mono" type="number" value={retries} onChange={(event) => setRetries(event.target.value)} />
             </Field>
           </div>
+          <Field label="命令执行沙箱">
+            <select className="task-input" value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as 'docker' | 'host')}>
+              <option value="docker">Docker 容器（推荐）</option>
+              <option value="host">宿主机兼容模式</option>
+            </select>
+          </Field>
+          {sandboxMode === 'docker' ? (
+            <div className={dockerReady ? 'sandbox-note ready' : 'sandbox-note unavailable'}>
+              <Container className="size-4 shrink-0" />
+              <p>{dockerReady
+                ? `无网络 · 1 CPU · 512 MB · 128 进程 · 最大增长 256 MB · ${runtime?.docker.image}`
+                : `Docker 暂不可用：${runtime?.docker.reason ?? '请启动 Docker Desktop 并准备基础镜像'}`}</p>
+            </div>
+          ) : (
+            <div className="sandbox-note warning">
+              <CircleAlert className="size-4 shrink-0" />
+              <p>兼容模式会在隔离 worktree 内直接运行命令，但不提供容器级网络和资源隔离。</p>
+            </div>
+          )}
           <label className="consent-row text-xs">
             <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
             <span>我已逐项审阅并批准此验收契约。</span>
           </label>
           <Button
             className="w-full bg-cyan-300 text-slate-950 hover:bg-cyan-200"
-            disabled={!confirmed || !model.trim() || !providerConfigured || submitting}
+            disabled={!confirmed || !model.trim() || !providerConfigured || !sandboxReady || submitting}
             onClick={() => void approve()}
           >
             {submitting ? <LoaderCircle className="animate-spin" /> : <Play />}
@@ -1100,6 +1152,13 @@ function RunEvidence({
               <Metric label="总 Token" value={run.state.token_usage.total_tokens ?? 0} />
               <Metric label="验收次数" value={run.state.verification_attempts} />
               <Metric label="修改文件" value={run.state.modified_files.length} />
+              <Card className="metric-card">
+                <CardContent>
+                  <p className="text-xs text-muted-foreground">执行边界</p>
+                  <p className="mt-2 flex items-center gap-2 text-sm"><Container className="size-4 text-cyan-300" />{run.task?.sandbox?.mode === 'docker' ? 'Docker 无网络沙箱' : '宿主机兼容模式'}</p>
+                  {run.task?.sandbox?.mode === 'docker' && <p className="mt-2 font-mono text-xs text-muted-foreground">{run.task.sandbox.cpus} CPU · {run.task.sandbox.memory_mb} MB · {run.task.sandbox.pids_limit} PIDs · +{run.task.sandbox.workspace_growth_mb} MB</p>}
+                </CardContent>
+              </Card>
             </div>
           </div>
         </TabsContent>

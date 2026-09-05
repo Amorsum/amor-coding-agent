@@ -13,6 +13,7 @@ from amor.domain import (
     AgentPhase,
     RunLimits,
     RunReport,
+    SandboxConfig,
     StepStatus,
     TaskSpec,
     TerminalStatus,
@@ -20,6 +21,7 @@ from amor.domain import (
     VerificationResult,
 )
 from amor.orchestrator import ModelDrivenOrchestrator, PlanningStrategy
+from amor.execution import build_command_executor
 from amor.policy import PolicyEngine
 from amor.profiler import RepositoryProfiler
 from amor.providers import ModelProvider
@@ -49,6 +51,7 @@ def run_repository_task(
     acceptance_plan_path: Path | None = None,
     should_cancel: Callable[[], bool] | None = None,
     trace_listener: Callable[[dict[str, Any]], None] | None = None,
+    sandbox: SandboxConfig | None = None,
 ) -> RunReport:
     repository = repository.resolve()
     profile = RepositoryProfiler().profile(repository)
@@ -68,6 +71,7 @@ def run_repository_task(
         provider=provider_name,
         model=model,
         limits=limits,
+        sandbox=sandbox or SandboxConfig(),
     )
     if (acceptance_plan is None) != (acceptance_plan_path is None):
         raise ValueError("acceptance plan and its source path must be provided together")
@@ -124,6 +128,11 @@ def run_repository_task(
             "sources": contract["sources"],
         },
     )
+    trace.record(
+        "sandbox_configured",
+        AgentPhase.INITIALIZING,
+        task.sandbox.model_dump(mode="json"),
+    )
     profile_path = run_dir / "repository-profile.json"
     profile_path.write_text(
         json.dumps(profile.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
@@ -132,6 +141,7 @@ def run_repository_task(
     )
 
     policy = PolicyEngine(workspace.root, allowed_paths, validation_commands)
+    command_executor = build_command_executor(workspace.root, task.sandbox)
     tools = ToolRegistry(
         workspace,
         policy,
@@ -140,6 +150,8 @@ def run_repository_task(
         limits.max_output_chars,
         limits.max_file_bytes,
         limits.max_seconds,
+        command_executor=command_executor,
+        should_cancel=should_cancel,
     )
     orchestrator = ModelDrivenOrchestrator(
         task,
@@ -153,7 +165,10 @@ def run_repository_task(
         should_cancel=should_cancel,
     )
     state = orchestrator.run_until_final_verification()
-    verifier = IndependentVerifier(BenchmarkLayout(project_root / "benchmarks"))
+    verifier = IndependentVerifier(
+        BenchmarkLayout(project_root / "benchmarks"),
+        command_executor=command_executor,
+    )
     verification_history: list[VerificationResult] = []
     verification: VerificationResult | None = None
 

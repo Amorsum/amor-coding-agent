@@ -14,6 +14,7 @@ from amor.domain.models import (
     ToolEvent,
     ToolResult,
 )
+from amor.execution import CommandExecutor, HostCommandExecutor
 from amor.policy import PolicyEngine, PolicyViolation
 from amor.trace import TraceRecorder
 from amor.workspace import IsolatedWorkspace
@@ -29,6 +30,8 @@ class ToolRegistry:
         max_output_chars: int,
         max_file_bytes: int,
         command_timeout_seconds: int,
+        command_executor: CommandExecutor | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> None:
         self.workspace = workspace
         self.policy = policy
@@ -37,6 +40,8 @@ class ToolRegistry:
         self.max_output_chars = max_output_chars
         self.max_file_bytes = max_file_bytes
         self.command_timeout_seconds = command_timeout_seconds
+        self.command_executor = command_executor or HostCommandExecutor()
+        self.should_cancel = should_cancel
         self.phase = AgentPhase.INITIALIZING
 
     def list_files(self, path: str = ".", max_depth: int = 3) -> ToolResult:
@@ -165,44 +170,35 @@ class ToolRegistry:
 
         def execute() -> ToolResult:
             approved = self.policy.validate_command(command)
-            allowed_environment_names = {
-                "PATH",
-                "PATHEXT",
-                "SYSTEMROOT",
-                "WINDIR",
-                "COMSPEC",
-                "TEMP",
-                "TMP",
-                "LANG",
-                "LC_ALL",
-            }
-            environment = {
-                name: value
-                for name, value in os.environ.items()
-                if name.upper() in allowed_environment_names
-            }
-            environment["PYTHONDONTWRITEBYTECODE"] = "1"
-            try:
-                process = subprocess.run(
-                    list(approved),
-                    cwd=self.workspace.root,
-                    env=environment,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    capture_output=True,
-                    timeout=self.command_timeout_seconds,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                output = (exc.stdout or "") + (exc.stderr or "")
-                return ToolResult(ok=False, summary="validation timed out", output=self._truncate(output))
-            output = self._truncate(process.stdout + process.stderr)
+            outcome = self.command_executor.run(
+                approved,
+                cwd=self.workspace.root,
+                timeout_seconds=self.command_timeout_seconds,
+                max_output_chars=self.max_output_chars,
+                should_cancel=self.should_cancel,
+            )
+            if outcome.cancelled:
+                summary = "validation cancelled by user"
+            elif outcome.timed_out:
+                summary = "validation timed out"
+            elif outcome.startup_error:
+                summary = f"validation command could not start: {outcome.startup_error}"
+            elif outcome.resource_exhausted:
+                summary = f"validation stopped: {outcome.resource_exhausted}"
+            else:
+                summary = f"validation exited with code {outcome.returncode}"
             return ToolResult(
-                ok=process.returncode == 0,
-                summary=f"validation exited with code {process.returncode}",
-                output=output,
-                metadata={"returncode": process.returncode},
+                ok=outcome.ok,
+                summary=summary,
+                output=outcome.output,
+                metadata={
+                    "returncode": outcome.returncode,
+                    "executor": outcome.executor,
+                    "timed_out": outcome.timed_out,
+                    "cancelled": outcome.cancelled,
+                    "resource_exhausted": outcome.resource_exhausted,
+                    "container_name": outcome.container_name,
+                },
             )
 
         return self._invoke("run_validation", arguments, execute)

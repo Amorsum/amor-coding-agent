@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 import time
 from pathlib import Path, PurePosixPath
@@ -9,14 +7,20 @@ from typing import Callable
 
 from amor.benchmarks.loader import BenchmarkLayout, load_hidden_suite
 from amor.domain import TaskSpec, VerificationCheck, VerificationResult
+from amor.execution import CommandExecutor, HostCommandExecutor, build_command_executor
 from amor.workspace import IsolatedWorkspace
 
 
 class IndependentVerifier:
     """Final acceptance authority, deliberately separate from the agent tool loop."""
 
-    def __init__(self, layout: BenchmarkLayout) -> None:
+    def __init__(
+        self,
+        layout: BenchmarkLayout,
+        command_executor: CommandExecutor | None = None,
+    ) -> None:
         self.layout = layout
+        self.command_executor = command_executor
 
     def verify(
         self,
@@ -28,6 +32,7 @@ class IndependentVerifier:
         should_cancel: Callable[[], bool] | None = None,
     ) -> VerificationResult:
         checks: list[VerificationCheck] = []
+        executor = self.command_executor or build_command_executor(workspace.root, task.sandbox)
 
         changed_files = workspace.changed_files()
         scope_passed = bool(changed_files) and all(
@@ -61,6 +66,7 @@ class IndependentVerifier:
                     workspace.root,
                     task,
                     should_cancel,
+                    command_executor=executor,
                 )
             )
             if should_cancel is not None and should_cancel():
@@ -71,18 +77,36 @@ class IndependentVerifier:
             try:
                 plan_path.relative_to(workspace.root.resolve())
             except ValueError:
+                runner_path = Path(__file__).with_name("structured_cases.py").resolve()
+                if executor.mode.value == "docker":
+                    source_root = Path(__file__).resolve().parents[2]
+                    command = [
+                        sys.executable,
+                        "-I",
+                        "-c",
+                        (
+                            "import runpy,sys;"
+                            "sys.path.insert(0,sys.argv[1]);"
+                            "sys.argv=[sys.argv[2],sys.argv[3]];"
+                            "runpy.run_path(sys.argv[0],run_name='__main__')"
+                        ),
+                        str(source_root),
+                        str(runner_path),
+                        str(plan_path),
+                    ]
+                    read_only_inputs = (source_root, plan_path)
+                else:
+                    command = [sys.executable, "-I", str(runner_path), str(plan_path)]
+                    read_only_inputs = ()
                 checks.append(
                     self._run_check(
                         "external_acceptance",
-                        [
-                            sys.executable,
-                            "-I",
-                            str(Path(__file__).with_name("structured_cases.py").resolve()),
-                            str(plan_path),
-                        ],
+                        command,
                         workspace.root,
                         task,
                         should_cancel,
+                        command_executor=executor,
+                        read_only_inputs=read_only_inputs,
                     )
                 )
             else:
@@ -137,6 +161,8 @@ class IndependentVerifier:
                 workspace.root,
                 task,
                 should_cancel,
+                command_executor=executor,
+                read_only_inputs=(hidden_suite,),
             )
         )
 
@@ -154,82 +180,36 @@ class IndependentVerifier:
         cwd: Path,
         task: TaskSpec,
         should_cancel: Callable[[], bool] | None = None,
+        *,
+        command_executor: CommandExecutor | None = None,
+        read_only_inputs: tuple[Path, ...] = (),
     ) -> VerificationCheck:
         started = time.perf_counter()
-        allowed_environment_names = {
-            "PATH",
-            "PATHEXT",
-            "SYSTEMROOT",
-            "WINDIR",
-            "COMSPEC",
-            "TEMP",
-            "TMP",
-            "LANG",
-            "LC_ALL",
-        }
-        environment = {
-            key: value
-            for key, value in os.environ.items()
-            if key.upper() in allowed_environment_names
-        }
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
-        try:
-            process = subprocess.Popen(
-                command,
-                cwd=cwd,
-                env=environment,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            deadline = time.monotonic() + task.limits.max_seconds
-            while True:
-                try:
-                    stdout, stderr = process.communicate(timeout=0.1)
-                    break
-                except subprocess.TimeoutExpired:
-                    if should_cancel is not None and should_cancel():
-                        process.terminate()
-                        try:
-                            process.communicate(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                            process.communicate()
-                        return VerificationCheck(
-                            name=name,
-                            passed=False,
-                            summary="verification cancelled by user",
-                            duration_ms=int((time.perf_counter() - started) * 1000),
-                        )
-                    if time.monotonic() >= deadline:
-                        process.kill()
-                        process.communicate()
-                        return VerificationCheck(
-                            name=name,
-                            passed=False,
-                            summary="verification timed out",
-                            duration_ms=int((time.perf_counter() - started) * 1000),
-                        )
-            combined = (stdout + stderr).strip()
-            max_chars = min(task.limits.max_output_chars, 4_000)
-            if len(combined) > max_chars:
-                combined = combined[:max_chars] + "\n... <verifier output truncated>"
-            summary = combined or f"command exited with code {process.returncode}"
-            return VerificationCheck(
-                name=name,
-                passed=process.returncode == 0,
-                summary=summary,
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
-        except OSError as exc:
-            return VerificationCheck(
-                name=name,
-                passed=False,
-                summary=f"verification command could not start: {exc}",
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
+        executor = command_executor or HostCommandExecutor()
+        outcome = executor.run(
+            command,
+            cwd=cwd,
+            timeout_seconds=task.limits.max_seconds,
+            max_output_chars=min(task.limits.max_output_chars, 4_000),
+            should_cancel=should_cancel,
+            read_only_inputs=read_only_inputs,
+        )
+        if outcome.cancelled:
+            summary = "verification cancelled by user"
+        elif outcome.timed_out:
+            summary = "verification timed out"
+        elif outcome.startup_error:
+            summary = f"verification command could not start: {outcome.startup_error}"
+        elif outcome.resource_exhausted:
+            summary = f"verification stopped: {outcome.resource_exhausted}"
+        else:
+            summary = outcome.output.strip() or f"command exited with code {outcome.returncode}"
+        return VerificationCheck(
+            name=name,
+            passed=outcome.ok,
+            summary=summary,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
 
     @staticmethod
     def _failure_category(checks: list[VerificationCheck]) -> str:

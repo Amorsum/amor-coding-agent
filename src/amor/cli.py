@@ -9,7 +9,7 @@ from amor.acceptance import (
     load_acceptance_plan,
     run_acceptance_planning,
 )
-from amor.domain import RunLimits
+from amor.domain import RunLimits, SandboxConfig, SandboxMode
 from amor.benchmarks.experiment import run_planning_experiment, run_strategy_experiment
 from amor.benchmarks.runner import SUPPORTED_PROVIDERS, run_benchmark
 from amor.context import SUPPORTED_CONTEXT_STRATEGIES, ContextStrategy
@@ -98,6 +98,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--strategy", choices=SUPPORTED_CONTEXT_STRATEGIES, default=ContextStrategy.SEARCH_FIRST.value)
     run.add_argument("--planning", choices=SUPPORTED_PLANNING_STRATEGIES, default=PlanningStrategy.STRUCTURED.value)
     run.add_argument("--context-budget-chars", type=int, default=40_000)
+    run.add_argument(
+        "--sandbox",
+        choices=(SandboxMode.DOCKER.value, SandboxMode.HOST.value),
+        default=SandboxMode.DOCKER.value,
+        help="target-command executor; Docker is fail-closed and never falls back to host",
+    )
+    run.add_argument("--sandbox-image", default="python:3.12-slim")
+    run.add_argument("--sandbox-cpus", type=float, default=1.0)
+    run.add_argument("--sandbox-memory-mb", type=int, default=512)
+    run.add_argument("--sandbox-pids", type=int, default=128)
+    run.add_argument("--sandbox-tmpfs-mb", type=int, default=64)
+    run.add_argument("--sandbox-workspace-growth-mb", type=int, default=256)
     run.add_argument(
         "--confirm-send-code",
         action="store_true",
@@ -295,6 +307,15 @@ def main() -> int:
                 planning_strategy=arguments.planning,
                 acceptance_plan=acceptance_plan,
                 acceptance_plan_path=acceptance_plan_path,
+                sandbox=SandboxConfig(
+                    mode=SandboxMode(arguments.sandbox),
+                    image=arguments.sandbox_image,
+                    cpus=arguments.sandbox_cpus,
+                    memory_mb=arguments.sandbox_memory_mb,
+                    pids_limit=arguments.sandbox_pids,
+                    tmpfs_mb=arguments.sandbox_tmpfs_mb,
+                    workspace_growth_mb=arguments.sandbox_workspace_growth_mb,
+                ),
             )
         except (AcceptanceContractError, RuntimeError, WorkspaceError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc

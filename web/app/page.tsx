@@ -287,7 +287,7 @@ export default function Home() {
           <div>
             <div className="flex items-baseline gap-2">
               <h1 className="text-base font-semibold tracking-[0.16em]">AMOR</h1>
-              <span className="text-xs text-muted-foreground">v0.12.0</span>
+              <span className="text-xs text-muted-foreground">v0.13.0</span>
             </div>
             <p className="text-xs text-muted-foreground">可信任务工作台</p>
           </div>

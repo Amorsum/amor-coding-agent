@@ -23,6 +23,8 @@ def test_run_accepts_deepseek_provider() -> None:
 
     assert arguments.provider == "deepseek-responses"
     assert arguments.max_verification_retries == 2
+    assert arguments.sandbox == "docker"
+    assert arguments.sandbox_memory_mb == 512
 
 
 def test_deepseek_pricing_defaults_to_cny() -> None:
