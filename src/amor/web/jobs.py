@@ -21,7 +21,9 @@ from amor.acceptance import (
     write_acceptance_plan,
 )
 from amor.context import ContextStrategy
+from amor.delivery import DeliveryReport, deliver_verified_patch, patch_digest
 from amor.domain import RunLimits, RunReport
+from amor.domain import TaskSpec
 from amor.local_runner import run_repository_task
 from amor.orchestrator import PlanningStrategy
 from amor.profiler import RepositoryProfiler
@@ -51,6 +53,9 @@ class JobStatus(StrEnum):
     NEEDS_INPUT = "NEEDS_INPUT"
     EXECUTION_QUEUED = "EXECUTION_QUEUED"
     RUNNING = "RUNNING"
+    DELIVERY_QUEUED = "DELIVERY_QUEUED"
+    DELIVERING = "DELIVERING"
+    DELIVERY_FAILED = "DELIVERY_FAILED"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
@@ -65,6 +70,7 @@ TERMINAL_JOB_STATUSES = {
     JobStatus.FAILED,
     JobStatus.BLOCKED,
     JobStatus.BUDGET_EXHAUSTED,
+    JobStatus.DELIVERY_FAILED,
     JobStatus.CANCELLED,
 }
 
@@ -197,6 +203,27 @@ class ContractEditRequest(BaseModel):
         return cleaned
 
 
+class DeliveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    patch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    branch_name: str = Field(min_length=1, max_length=200)
+    commit_requested: bool = True
+    commit_message: str = Field(default="fix: apply verified AMOR patch", max_length=500)
+    confirm_apply: Literal[True]
+
+    @field_validator("branch_name", "commit_message")
+    @classmethod
+    def clean_delivery_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("delivery text must not be blank")
+        if "\n" in cleaned or "\r" in cleaned:
+            raise ValueError("delivery text must be a single line")
+        return cleaned
+
+
 class JobEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -227,6 +254,20 @@ class ContractRevision(BaseModel):
     created_at: datetime
 
 
+class DeliveryState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt: int = Field(ge=1)
+    status: Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+    request: DeliveryRequest
+    report: dict[str, Any] | None = None
+    report_artifact: str | None = None
+    workspace_artifact: str | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class JobSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -242,6 +283,8 @@ class JobSnapshot(BaseModel):
     error: str | None = None
     clarifications: list[ClarificationRound] = Field(default_factory=list)
     contract_revisions: list[ContractRevision] = Field(default_factory=list)
+    patch_sha256: str | None = None
+    deliveries: list[DeliveryState] = Field(default_factory=list)
     events: list[JobEvent] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -257,6 +300,7 @@ class _ManagedJob:
 ProviderFactory = Callable[..., ModelProvider]
 Planner = Callable[..., AcceptancePlan]
 Runner = Callable[..., RunReport]
+Deliverer = Callable[..., DeliveryReport]
 
 
 class TaskJobManager:
@@ -270,6 +314,7 @@ class TaskJobManager:
         provider_factory: ProviderFactory = build_api_provider,
         planner: Planner = run_acceptance_planning,
         runner: Runner = run_repository_task,
+        deliverer: Deliverer = deliver_verified_patch,
     ) -> None:
         self.artifacts_root = artifacts_root.resolve()
         self.jobs_root = self.artifacts_root / "jobs"
@@ -281,6 +326,7 @@ class TaskJobManager:
         self.provider_factory = provider_factory
         self.planner = planner
         self.runner = runner
+        self.deliverer = deliverer
         self._lock = RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="amor-local-job")
         self._jobs: dict[str, _ManagedJob] = {}
@@ -485,16 +531,83 @@ class TaskJobManager:
             )
             return self._public_snapshot(managed.snapshot, include_events=True)
 
+    def start_delivery(
+        self,
+        job_id: str,
+        request: DeliveryRequest,
+    ) -> dict[str, Any]:
+        with self._lock:
+            managed = self._get(job_id)
+            if managed.snapshot.status not in {
+                JobStatus.SUCCEEDED,
+                JobStatus.DELIVERY_FAILED,
+            }:
+                raise JobConflict("only a successfully verified run can be delivered")
+            plan = self._load_job_plan(managed.snapshot)
+            if plan.contract_sha256 != request.contract_sha256:
+                raise JobConflict("contract changed after the run; delivery was refused")
+            run = managed.snapshot.run
+            if not isinstance(run, dict) or not run.get("verification", {}).get("passed"):
+                raise JobConflict("successful verifier evidence is missing")
+            patch = run.get("git_diff")
+            if not isinstance(patch, str) or not patch.strip():
+                raise JobConflict("verified run does not contain a patch")
+            actual_patch_sha256 = patch_digest(patch)
+            if managed.snapshot.patch_sha256 != actual_patch_sha256:
+                raise JobConflict("stored patch fingerprint no longer matches the verified run")
+            if request.patch_sha256 != actual_patch_sha256:
+                raise JobConflict("patch changed after it was reviewed; refresh before delivery")
+            self._require_unchanged_repository(managed.snapshot, plan)
+            TaskSpec.model_validate(run.get("task"))
+
+            now = _utc_now()
+            delivery = DeliveryState(
+                attempt=len(managed.snapshot.deliveries) + 1,
+                status="QUEUED",
+                request=request,
+                created_at=now,
+                updated_at=now,
+            )
+            managed.snapshot.deliveries.append(delivery)
+            managed.cancel_event.clear()
+            managed.snapshot.status = JobStatus.DELIVERY_QUEUED
+            managed.snapshot.phase = "DELIVERY_QUEUED"
+            managed.snapshot.error = None
+            self._append_event_locked(
+                managed,
+                "delivery_queued",
+                f"已验收补丁将交付到本地分支 {request.branch_name}",
+                payload={
+                    "branch_name": request.branch_name,
+                    "patch_sha256": request.patch_sha256,
+                    "commit_requested": request.commit_requested,
+                },
+            )
+            managed.future = self._executor.submit(self._run_delivery, job_id)
+            return self._public_snapshot(managed.snapshot, include_events=True)
+
     def cancel(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             managed = self._get(job_id)
             if managed.snapshot.status in TERMINAL_JOB_STATUSES:
                 return self._public_snapshot(managed.snapshot, include_events=True)
+            delivery = self._current_delivery(managed.snapshot)
+            delivery_active = managed.snapshot.status in {
+                JobStatus.DELIVERY_QUEUED,
+                JobStatus.DELIVERING,
+            }
             managed.cancel_event.set()
             if managed.future is not None and managed.future.cancel():
-                managed.snapshot.status = JobStatus.CANCELLED
-                managed.snapshot.phase = "CANCELLED"
-                self._append_event_locked(managed, "cancelled", "任务已在执行前取消")
+                if delivery_active and delivery is not None:
+                    delivery.status = "CANCELLED"
+                    delivery.updated_at = _utc_now()
+                    managed.snapshot.status = JobStatus.SUCCEEDED
+                    managed.snapshot.phase = "SUCCEEDED"
+                    self._append_event_locked(managed, "delivery_cancelled", "补丁交付已在执行前取消")
+                else:
+                    managed.snapshot.status = JobStatus.CANCELLED
+                    managed.snapshot.phase = "CANCELLED"
+                    self._append_event_locked(managed, "cancelled", "任务已在执行前取消")
             elif managed.snapshot.status == JobStatus.AWAITING_APPROVAL:
                 managed.snapshot.status = JobStatus.CANCELLED
                 managed.snapshot.phase = "CANCELLED"
@@ -504,7 +617,11 @@ class TaskJobManager:
                 self._append_event_locked(
                     managed,
                     "cancel_requested",
-                    "已请求取消，将在当前安全步骤结束后停止",
+                    (
+                        "已请求取消补丁交付，将在当前安全步骤结束后停止"
+                        if delivery_active
+                        else "已请求取消，将在当前安全步骤结束后停止"
+                    ),
                 )
             return self._public_snapshot(managed.snapshot, include_events=True)
 
@@ -648,6 +765,7 @@ class TaskJobManager:
             )
             with self._lock:
                 managed.snapshot.run = _safe_report(report)
+                managed.snapshot.patch_sha256 = patch_digest(report.git_diff)
                 managed.snapshot.run_artifact = self._relative_artifact(
                     Path(report.trace_path).parent / "final-report.json"
                 )
@@ -661,6 +779,103 @@ class TaskJobManager:
                 )
         except Exception as exc:
             self._finish_error(job_id, exc)
+
+    def _run_delivery(self, job_id: str) -> None:
+        managed = self._managed(job_id)
+        delivery = self._current_delivery(managed.snapshot)
+        if delivery is None:
+            self._finish_delivery_error(job_id, JobConflict("delivery settings are missing"))
+            return
+        if managed.cancel_event.is_set():
+            self._finish_delivery_cancelled(job_id)
+            return
+        with self._lock:
+            delivery.status = "RUNNING"
+            delivery.updated_at = _utc_now()
+            managed.snapshot.status = JobStatus.DELIVERING
+            managed.snapshot.phase = "DELIVERING"
+            self._append_event_locked(
+                managed,
+                "delivery_started",
+                "正在新的交付 worktree 中应用并重新验收补丁",
+            )
+
+        try:
+            plan = self._load_job_plan(managed.snapshot)
+            self._require_unchanged_repository(managed.snapshot, plan)
+            run = managed.snapshot.run
+            if not isinstance(run, dict):
+                raise JobConflict("verified run evidence is missing")
+            patch = run.get("git_diff")
+            if not isinstance(patch, str):
+                raise JobConflict("verified patch is missing")
+            request = delivery.request
+            delivery_root = (
+                self.jobs_root
+                / job_id
+                / "deliveries"
+                / f"attempt-{delivery.attempt:04d}"
+            )
+            report = self.deliverer(
+                project_root=self.project_root,
+                repository=Path(managed.snapshot.planning_request.repository),
+                baseline_commit=plan.baseline_commit,
+                patch=patch,
+                expected_patch_sha256=request.patch_sha256,
+                branch_name=request.branch_name,
+                commit_requested=request.commit_requested,
+                commit_message=request.commit_message,
+                task=TaskSpec.model_validate(run.get("task")),
+                acceptance_plan_path=self._artifact_path(managed.snapshot.plan_artifact or ""),
+                delivery_root=delivery_root,
+                should_cancel=managed.cancel_event.is_set,
+            )
+            with self._lock:
+                delivery.report = report.model_dump(mode="json", exclude={"workspace_path"})
+                delivery.report_artifact = self._relative_artifact(
+                    delivery_root / "delivery-report.json"
+                )
+                delivery.workspace_artifact = self._relative_artifact(Path(report.workspace_path))
+                delivery.status = report.status
+                delivery.error = report.error
+                delivery.updated_at = _utc_now()
+                if report.status == "SUCCEEDED":
+                    managed.snapshot.status = JobStatus.SUCCEEDED
+                    managed.snapshot.phase = "DELIVERED"
+                    managed.snapshot.error = None
+                    message = (
+                        f"补丁已重新验收并提交到本地分支 {report.branch_name}"
+                        if report.commit_sha
+                        else f"补丁已重新验收并保留在交付 worktree：{report.branch_name}"
+                    )
+                    kind = "delivery_finished"
+                elif report.status == "CANCELLED":
+                    managed.snapshot.status = JobStatus.SUCCEEDED
+                    managed.snapshot.phase = "SUCCEEDED"
+                    managed.snapshot.error = None
+                    message = "补丁交付已取消；原验收结果保持不变"
+                    kind = "delivery_cancelled"
+                else:
+                    managed.snapshot.status = JobStatus.DELIVERY_FAILED
+                    managed.snapshot.phase = "DELIVERY_FAILED"
+                    managed.snapshot.error = report.error
+                    message = "补丁落地后的独立验收未通过"
+                    kind = "delivery_failed"
+                self._append_event_locked(
+                    managed,
+                    kind,
+                    message,
+                    payload={
+                        "branch_name": report.branch_name,
+                        "commit_sha": report.commit_sha,
+                        "patch_sha256": report.patch_sha256,
+                    },
+                )
+        except Exception as exc:
+            if managed.cancel_event.is_set():
+                self._finish_delivery_cancelled(job_id)
+            else:
+                self._finish_delivery_error(job_id, exc)
 
     def _trace_listener(self, job_id: str) -> Callable[[dict[str, Any]], None]:
         def listen(event: dict[str, Any]) -> None:
@@ -752,6 +967,36 @@ class TaskJobManager:
             managed.snapshot.error = str(exc)[:2_000]
             self._append_event_locked(managed, "error", "任务执行失败")
 
+    def _finish_delivery_cancelled(self, job_id: str) -> None:
+        with self._lock:
+            managed = self._get(job_id)
+            delivery = self._current_delivery(managed.snapshot)
+            if delivery is not None:
+                delivery.status = "CANCELLED"
+                delivery.updated_at = _utc_now()
+            managed.snapshot.status = JobStatus.SUCCEEDED
+            managed.snapshot.phase = "SUCCEEDED"
+            managed.snapshot.error = None
+            self._append_event_locked(
+                managed,
+                "delivery_cancelled",
+                "补丁交付已取消；原验收结果保持不变",
+            )
+
+    def _finish_delivery_error(self, job_id: str, exc: Exception) -> None:
+        with self._lock:
+            managed = self._get(job_id)
+            delivery = self._current_delivery(managed.snapshot)
+            error = str(exc)[:2_000]
+            if delivery is not None:
+                delivery.status = "FAILED"
+                delivery.error = error
+                delivery.updated_at = _utc_now()
+            managed.snapshot.status = JobStatus.DELIVERY_FAILED
+            managed.snapshot.phase = "DELIVERY_FAILED"
+            managed.snapshot.error = error
+            self._append_event_locked(managed, "delivery_failed", "补丁交付失败")
+
     def _append_event_locked(
         self,
         managed: _ManagedJob,
@@ -803,6 +1048,10 @@ class TaskJobManager:
             )
         )
         return plan
+
+    @staticmethod
+    def _current_delivery(snapshot: JobSnapshot) -> DeliveryState | None:
+        return snapshot.deliveries[-1] if snapshot.deliveries else None
 
     @staticmethod
     def _revision_context(
@@ -885,6 +1134,11 @@ class TaskJobManager:
                 continue
             managed = _ManagedJob(snapshot=snapshot)
             self._jobs[snapshot.job_id] = managed
+            if snapshot.patch_sha256 is None and isinstance(snapshot.run, dict):
+                patch = snapshot.run.get("git_diff")
+                if isinstance(patch, str):
+                    snapshot.patch_sha256 = patch_digest(patch)
+                    self._persist_locked(snapshot)
             if snapshot.plan_artifact and snapshot.plan and not snapshot.contract_revisions:
                 try:
                     plan = self._load_job_plan(snapshot)
@@ -902,12 +1156,32 @@ class TaskJobManager:
                         )
                     )
                     self._persist_locked(snapshot)
+            delivery = self._current_delivery(snapshot)
+            if delivery is not None and snapshot.status in {
+                JobStatus.DELIVERY_QUEUED,
+                JobStatus.DELIVERING,
+                JobStatus.CANCEL_REQUESTED,
+            }:
+                delivery.status = "FAILED"
+                delivery.error = "local service restarted before delivery completed"
+                delivery.updated_at = _utc_now()
+                snapshot.status = JobStatus.DELIVERY_FAILED
+                snapshot.phase = "DELIVERY_FAILED"
+                snapshot.error = delivery.error
+                self._append_event_locked(
+                    managed,
+                    "delivery_interrupted",
+                    "服务重启，未完成的补丁交付已终止",
+                )
+                continue
             if snapshot.status in {
                 JobStatus.QUEUED,
                 JobStatus.PLANNING,
                 JobStatus.REPLANNING,
                 JobStatus.EXECUTION_QUEUED,
                 JobStatus.RUNNING,
+                JobStatus.DELIVERY_QUEUED,
+                JobStatus.DELIVERING,
                 JobStatus.CANCEL_REQUESTED,
             }:
                 snapshot.status = JobStatus.FAILED

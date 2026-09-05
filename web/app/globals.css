@@ -178,6 +178,22 @@ select.task-input { @apply appearance-auto; }
   @apply my-2 text-sm leading-relaxed text-foreground/85;
 }
 
+.delivery-result-grid {
+  @apply grid gap-3 sm:grid-cols-2;
+}
+
+.delivery-result-grid > div {
+  @apply min-w-0 rounded-lg border border-white/8 bg-black/15 p-3;
+}
+
+.delivery-result-grid span {
+  @apply mb-2 block text-xs text-muted-foreground;
+}
+
+.delivery-result-grid code {
+  @apply block break-all font-mono text-xs leading-relaxed text-cyan-100;
+}
+
 .phase-track {
   @apply grid grid-cols-2 gap-3 sm:grid-cols-5;
 }

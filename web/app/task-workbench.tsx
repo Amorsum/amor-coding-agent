@@ -9,12 +9,15 @@ import {
   Code2,
   FileDiff,
   FolderGit2,
+  GitBranch,
+  GitCommitHorizontal,
   History,
   KeyRound,
   ListChecks,
   LoaderCircle,
   MessageSquareText,
   PencilLine,
+  PackageCheck,
   Play,
   Plus,
   Send,
@@ -103,6 +106,33 @@ type RunResult = {
   finished_at: string;
 };
 
+type DeliveryState = {
+  attempt: number;
+  status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  request: {
+    branch_name: string;
+    commit_requested: boolean;
+    commit_message: string;
+    patch_sha256: string;
+  };
+  report: {
+    delivery_id: string;
+    status: string;
+    branch_name: string;
+    baseline_commit: string;
+    patch_sha256: string;
+    commit_requested: boolean;
+    commit_sha?: string | null;
+    verification?: { passed: boolean; checks: VerificationCheck[] } | null;
+    error?: string | null;
+  } | null;
+  report_artifact: string | null;
+  workspace_artifact: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type JobEvent = {
   sequence: number;
   created_at: string;
@@ -145,6 +175,8 @@ type Job = {
     created_at: string;
   }>;
   contract_revisions: ContractRevision[];
+  patch_sha256: string | null;
+  deliveries: DeliveryState[];
   events: JobEvent[];
   created_at: string;
   updated_at: string;
@@ -180,6 +212,8 @@ const activeStatuses = new Set([
   'REPLANNING',
   'EXECUTION_QUEUED',
   'RUNNING',
+  'DELIVERY_QUEUED',
+  'DELIVERING',
   'CANCEL_REQUESTED',
 ]);
 
@@ -386,7 +420,7 @@ export function TaskWorkbench() {
         </ScrollArea>
         <div className="rail-note">
           <ShieldCheck className="mt-0.5 size-4 shrink-0 text-cyan-300" />
-          <p>任务串行执行。代码只在隔离 worktree 中修改，不会自动提交或推送。</p>
+          <p>任务串行执行。只有再次确认后才会在独立交付 worktree 中创建本地分支；不会自动推送。</p>
         </div>
       </aside>
 
@@ -626,7 +660,7 @@ function JobDetail({
       ) : job.status === 'NEEDS_INPUT' && job.plan ? (
         <NeedsInput key={job.plan.contract_sha256} job={job} plan={job.plan} runtime={runtime} onUpdated={onUpdated} onError={onError} />
       ) : job.run ? (
-        <RunEvidence job={job} run={job.run} />
+        <RunEvidence job={job} run={job.run} onUpdated={onUpdated} onError={onError} />
       ) : (
         <LiveProgress job={job} />
       )}
@@ -1027,44 +1061,197 @@ function LiveProgress({ job }: { job: Job }) {
   );
 }
 
-function RunEvidence({ job, run }: { job: Job; run: RunResult }) {
+function RunEvidence({
+  job,
+  run,
+  onUpdated,
+  onError,
+}: {
+  job: Job;
+  run: RunResult;
+  onUpdated: (job: Job) => void;
+  onError: (reason: unknown) => void;
+}) {
   return (
-    <Tabs defaultValue="verification">
-      <TabsList variant="line" className="w-full justify-start border-b border-white/8">
-        <TabsTrigger value="verification">验收结果</TabsTrigger>
-        <TabsTrigger value="timeline">实时轨迹 · {job.events.length}</TabsTrigger>
-        <TabsTrigger value="diff">Git Diff</TabsTrigger>
-      </TabsList>
-      <TabsContent value="verification" className="pt-4">
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-          <Card className="border-white/8 bg-card/75">
-            <CardHeader><CardTitle className="flex items-center gap-2"><ListChecks className="size-4 text-cyan-300" />Verifier 检查</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              {run.verification.checks.map((check) => (
+    <div className="space-y-5">
+      <Tabs defaultValue="verification">
+        <TabsList variant="line" className="w-full justify-start border-b border-white/8">
+          <TabsTrigger value="verification">验收结果</TabsTrigger>
+          <TabsTrigger value="timeline">实时轨迹 · {job.events.length}</TabsTrigger>
+          <TabsTrigger value="diff">Git Diff</TabsTrigger>
+        </TabsList>
+        <TabsContent value="verification" className="pt-4">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+            <Card className="border-white/8 bg-card/75">
+              <CardHeader><CardTitle className="flex items-center gap-2"><ListChecks className="size-4 text-cyan-300" />Verifier 检查</CardTitle></CardHeader>
+              <CardContent className="space-y-3">
+                {run.verification.checks.map((check) => (
+                  <div key={check.name} className="check-row">
+                    <span className={check.passed ? 'check-icon pass' : 'check-icon fail'}>
+                      {check.passed ? <Check /> : <CircleAlert />}
+                    </span>
+                    <div><p className="text-sm">{checkLabel(check.name)}</p><p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">{check.summary}</p></div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+            <div className="space-y-4">
+              <Metric label="模型轮次" value={run.state.round} />
+              <Metric label="总 Token" value={run.state.token_usage.total_tokens ?? 0} />
+              <Metric label="验收次数" value={run.state.verification_attempts} />
+              <Metric label="修改文件" value={run.state.modified_files.length} />
+            </div>
+          </div>
+        </TabsContent>
+        <TabsContent value="timeline" className="pt-4"><Timeline events={job.events} /></TabsContent>
+        <TabsContent value="diff" className="pt-4">
+          {run.git_diff ? <pre className="diff-block mt-0"><code>{run.git_diff}</code></pre> : (
+            <Empty className="border border-dashed border-white/10"><EmptyHeader><EmptyMedia variant="icon"><FileDiff /></EmptyMedia><EmptyTitle>没有代码差异</EmptyTitle><EmptyDescription>任务未产生可应用的补丁。</EmptyDescription></EmptyHeader></Empty>
+          )}
+        </TabsContent>
+      </Tabs>
+      {run.verification.passed && job.plan && job.patch_sha256 && (
+        <DeliveryPanel key={job.deliveries.length} job={job} onUpdated={onUpdated} onError={onError} />
+      )}
+    </div>
+  );
+}
+
+function DeliveryPanel({
+  job,
+  onUpdated,
+  onError,
+}: {
+  job: Job;
+  onUpdated: (job: Job) => void;
+  onError: (reason: unknown) => void;
+}) {
+  const delivery = job.deliveries.at(-1);
+  const retrySuffix = delivery && delivery.status !== 'SUCCEEDED' ? `-retry-${delivery.attempt + 1}` : '';
+  const defaultBranch = delivery
+    ? `${delivery.request.branch_name}${retrySuffix}`
+    : `amor/task-${job.job_id.slice(-8)}`;
+  const [branchName, setBranchName] = useState(defaultBranch);
+  const [commitRequested, setCommitRequested] = useState(true);
+  const [commitMessage, setCommitMessage] = useState('fix: apply verified AMOR patch');
+  const [confirmed, setConfirmed] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const deliver = async () => {
+    if (!job.plan || !job.patch_sha256) return;
+    setSubmitting(true);
+    try {
+      const updated = await api<Job>(`/api/jobs/${job.job_id}/deliver`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contract_sha256: job.plan.contract_sha256,
+          patch_sha256: job.patch_sha256,
+          branch_name: branchName.trim(),
+          commit_requested: commitRequested,
+          commit_message: commitMessage.trim(),
+          confirm_apply: confirmed,
+        }),
+      });
+      onUpdated(updated);
+    } catch (reason) {
+      onError(reason);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (delivery?.status === 'QUEUED' || delivery?.status === 'RUNNING') {
+    return (
+      <Card className="border-cyan-300/20 bg-cyan-300/[0.035]">
+        <CardHeader><CardTitle className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin text-cyan-300" />正在安全交付补丁</CardTitle></CardHeader>
+        <CardContent className="space-y-3 text-sm text-muted-foreground">
+          <p>AMOR 正在独立 worktree 中创建 <code>{delivery.request.branch_name}</code>，应用同一补丁并重新执行 Verifier。</p>
+          <p className="font-mono text-xs text-cyan-100">patch {delivery.request.patch_sha256}</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (delivery?.status === 'SUCCEEDED' && delivery.report) {
+    return (
+      <Card className="border-emerald-400/20 bg-emerald-400/[0.035]">
+        <CardHeader><CardTitle className="flex items-center gap-2"><PackageCheck className="size-4 text-emerald-300" />补丁已安全交付</CardTitle></CardHeader>
+        <CardContent className="space-y-5">
+          <div className="delivery-result-grid">
+            <div><span>本地分支</span><code>{delivery.report.branch_name}</code></div>
+            <div><span>本地 Commit</span><code>{delivery.report.commit_sha ?? '未提交，保留在交付 worktree'}</code></div>
+            <div><span>交付工作区</span><code>{delivery.workspace_artifact ?? '—'}</code></div>
+            <div><span>补丁指纹</span><code>{delivery.report.patch_sha256}</code></div>
+          </div>
+          <div>
+            <h3 className="contract-title">落地后二次验收</h3>
+            <div className="space-y-3">
+              {delivery.report.verification?.checks.map((check) => (
                 <div key={check.name} className="check-row">
-                  <span className={check.passed ? 'check-icon pass' : 'check-icon fail'}>
-                    {check.passed ? <Check /> : <CircleAlert />}
-                  </span>
-                  <div><p className="text-sm">{checkLabel(check.name)}</p><p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">{check.summary}</p></div>
+                  <span className={check.passed ? 'check-icon pass' : 'check-icon fail'}>{check.passed ? <Check /> : <CircleAlert />}</span>
+                  <div><p className="text-sm">{checkLabel(check.name)}</p><p className="mt-1 text-xs text-muted-foreground">{check.summary}</p></div>
                 </div>
               ))}
-            </CardContent>
-          </Card>
-          <div className="space-y-4">
-            <Metric label="模型轮次" value={run.state.round} />
-            <Metric label="总 Token" value={run.state.token_usage.total_tokens ?? 0} />
-            <Metric label="验收次数" value={run.state.verification_attempts} />
-            <Metric label="修改文件" value={run.state.modified_files.length} />
+            </div>
           </div>
-        </div>
-      </TabsContent>
-      <TabsContent value="timeline" className="pt-4"><Timeline events={job.events} /></TabsContent>
-      <TabsContent value="diff" className="pt-4">
-        {run.git_diff ? <pre className="diff-block mt-0"><code>{run.git_diff}</code></pre> : (
-          <Empty className="border border-dashed border-white/10"><EmptyHeader><EmptyMedia variant="icon"><FileDiff /></EmptyMedia><EmptyTitle>没有代码差异</EmptyTitle><EmptyDescription>任务未产生可应用的补丁。</EmptyDescription></EmptyHeader></Empty>
+          <p className="text-xs leading-relaxed text-muted-foreground">原仓库当前分支和工作副本没有被切换或修改；本版不会自动推送远端。</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const canStart = job.status === 'SUCCEEDED' || job.status === 'DELIVERY_FAILED';
+  return (
+    <Card className="border-white/8 bg-card/75">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><GitBranch className="size-4 text-cyan-300" />交付已验收补丁</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {delivery?.status === 'FAILED' && (
+          <div className="rounded-lg border border-rose-400/25 bg-rose-400/[0.06] p-4 text-sm text-rose-100">
+            上一次交付失败：{delivery.error ?? delivery.report?.error ?? '未通过落地后验收'}。失败现场已保留，请使用新的分支名重试。
+          </div>
         )}
-      </TabsContent>
-    </Tabs>
+        {delivery?.status === 'CANCELLED' && (
+          <div className="rounded-lg border border-amber-300/20 bg-amber-300/[0.05] p-4 text-sm text-amber-100">上一次交付已取消，原始验收结果仍然有效。</div>
+        )}
+        <div className="grid gap-5 lg:grid-cols-[1fr_1fr]">
+          <Field label="新建本地分支" hint="分支必须不存在；原仓库当前分支不会被切换。">
+            <input className="task-input font-mono" value={branchName} onChange={(event) => setBranchName(event.target.value)} />
+          </Field>
+          <Field label="已验收补丁 SHA-256">
+            <input className="task-input font-mono" value={job.patch_sha256 ?? ''} readOnly />
+          </Field>
+        </div>
+        <label className="consent-row">
+          <input type="checkbox" checked={commitRequested} onChange={(event) => setCommitRequested(event.target.checked)} />
+          <span><strong className="text-foreground">生成本地 Commit</strong><br />关闭后，补丁会保留在独立交付 worktree 中等待人工检查。</span>
+        </label>
+        {commitRequested && (
+          <Field label="Commit 信息">
+            <div className="relative">
+              <GitCommitHorizontal className="pointer-events-none absolute top-3 left-3 size-4 text-muted-foreground" />
+              <input className="task-input pl-10" value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} />
+            </div>
+          </Field>
+        )}
+        <label className="consent-row">
+          <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
+          <span>我确认将当前 SHA-256 对应的已验收补丁应用到新的本地分支，并重新运行相同验收。</span>
+        </label>
+        <div className="flex justify-end">
+          <Button
+            className="bg-cyan-300 text-slate-950 hover:bg-cyan-200"
+            onClick={() => void deliver()}
+            disabled={!canStart || submitting || !confirmed || !branchName.trim() || (commitRequested && !commitMessage.trim())}
+          >
+            {submitting ? <LoaderCircle className="animate-spin" /> : <PackageCheck />}
+            创建分支并重新验收
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1111,7 +1298,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 function JobStatusBadge({ status }: { status: string }) {
   const successful = status === 'SUCCEEDED';
-  const warning = ['AWAITING_APPROVAL', 'NEEDS_INPUT', 'BLOCKED', 'CANCEL_REQUESTED'].includes(status);
+  const warning = ['AWAITING_APPROVAL', 'NEEDS_INPUT', 'BLOCKED', 'DELIVERY_FAILED', 'CANCEL_REQUESTED'].includes(status);
   const active = activeStatuses.has(status) && status !== 'CANCEL_REQUESTED';
   return (
     <Badge variant="outline" className={successful ? 'border-emerald-400/35 bg-emerald-400/10 text-emerald-300' : warning ? 'border-amber-300/35 bg-amber-300/10 text-amber-200' : active ? 'border-cyan-300/35 bg-cyan-300/10 text-cyan-200' : 'border-rose-400/35 bg-rose-400/10 text-rose-300'}>
@@ -1176,12 +1363,13 @@ function jobStatusLabel(status: string): string {
   return {
     QUEUED: '等待规划', PLANNING: '规划中', REPLANNING: '修订中', AWAITING_APPROVAL: '等待审批', NEEDS_INPUT: '需要信息',
     EXECUTION_QUEUED: '等待执行', RUNNING: '执行中', SUCCEEDED: '验收通过', FAILED: '执行失败',
+    DELIVERY_QUEUED: '等待交付', DELIVERING: '交付验收中', DELIVERY_FAILED: '交付失败',
     BLOCKED: '安全阻断', BUDGET_EXHAUSTED: '预算耗尽', CANCEL_REQUESTED: '正在取消', CANCELLED: '已取消',
   }[status] ?? status;
 }
 
 function phaseLabel(phase: string): string {
-  return { PLANNING: '验收规划', REPLANNING: '契约修订', AWAITING_APPROVAL: '人工审批', RUNNING: 'Agent 执行', SUCCEEDED: '最终验收' }[phase] ?? phase;
+  return { PLANNING: '验收规划', REPLANNING: '契约修订', AWAITING_APPROVAL: '人工审批', RUNNING: 'Agent 执行', DELIVERY_QUEUED: '等待交付', DELIVERING: '交付验收', DELIVERED: '已交付', DELIVERY_FAILED: '交付失败', SUCCEEDED: '最终验收' }[phase] ?? phase;
 }
 
 function revisionSourceLabel(source: ContractRevision['source']): string {

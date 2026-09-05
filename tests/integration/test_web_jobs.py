@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from amor.acceptance import write_acceptance_plan
 from amor.benchmarks import BenchmarkLayout
+from amor.delivery import DeliveryReport
 from amor.domain import (
     AgentPhase,
     AgentState,
@@ -34,6 +35,17 @@ def wait_for_status(client: TestClient, job_id: str, expected: str) -> dict:
             return job
         time.sleep(0.02)
     raise AssertionError(f"job did not reach {expected}: {job}")
+
+
+def wait_for_delivery_status(client: TestClient, job_id: str, expected: str) -> dict:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        job = client.get(f"/api/jobs/{job_id}").json()
+        deliveries = job.get("deliveries", [])
+        if deliveries and deliveries[-1]["status"] == expected:
+            return job
+        time.sleep(0.02)
+    raise AssertionError(f"delivery did not reach {expected}: {job}")
 
 
 def test_local_web_job_plans_waits_for_approval_and_runs(tmp_path: Path) -> None:
@@ -142,12 +154,44 @@ def test_local_web_job_plans_waits_for_approval_and_runs(tmp_path: Path) -> None
         )
         return report
 
+    def deliverer(**kwargs):
+        workspace = kwargs["delivery_root"] / "workspace"
+        workspace.mkdir(parents=True)
+        report = DeliveryReport(
+            delivery_id="web-delivery",
+            status="SUCCEEDED",
+            branch_name=kwargs["branch_name"],
+            baseline_commit=kwargs["baseline_commit"],
+            patch_sha256=kwargs["expected_patch_sha256"],
+            commit_requested=kwargs["commit_requested"],
+            commit_sha="a" * 40,
+            verification=VerificationResult(
+                passed=True,
+                checks=[
+                    VerificationCheck(
+                        name="visible_tests_1",
+                        passed=True,
+                        summary="delivery checks passed",
+                    )
+                ],
+            ),
+            workspace_path=str(workspace),
+            created_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(timezone.utc),
+        )
+        (kwargs["delivery_root"] / "delivery-report.json").write_text(
+            json.dumps(report.model_dump(mode="json")),
+            encoding="utf-8",
+        )
+        return report
+
     manager = TaskJobManager(
         artifacts,
         project_root=project_root(),
         provider_factory=provider_factory,
         planner=planner,
         runner=runner,
+        deliverer=deliverer,
     )
     with TestClient(
         create_app(
@@ -201,6 +245,38 @@ def test_local_web_job_plans_waits_for_approval_and_runs(tmp_path: Path) -> None
         assert completed["run"]["verification"]["passed"] is True
         assert any(event["kind"] == "tool" for event in completed["events"])
         assert client.get("/api/jobs").json()["items"][0]["events"] == []
+
+        rejected_delivery = client.post(
+            f"/api/jobs/{job_id}/deliver",
+            json={
+                "contract_sha256": completed["plan"]["contract_sha256"],
+                "patch_sha256": "0" * 64,
+                "branch_name": "amor/web-delivery",
+                "commit_requested": True,
+                "commit_message": "fix: deliver verified patch",
+                "confirm_apply": True,
+            },
+            headers={"Origin": "http://localhost:8765"},
+        )
+        assert rejected_delivery.status_code == 409
+
+        delivery = client.post(
+            f"/api/jobs/{job_id}/deliver",
+            json={
+                "contract_sha256": completed["plan"]["contract_sha256"],
+                "patch_sha256": completed["patch_sha256"],
+                "branch_name": "amor/web-delivery",
+                "commit_requested": True,
+                "commit_message": "fix: deliver verified patch",
+                "confirm_apply": True,
+            },
+            headers={"Origin": "http://localhost:8765"},
+        )
+        assert delivery.status_code == 202
+        delivered = wait_for_delivery_status(client, job_id, "SUCCEEDED")
+        assert delivered["status"] == "SUCCEEDED"
+        assert delivered["deliveries"][-1]["report"]["commit_sha"] == "a" * 40
+        assert delivered["deliveries"][-1]["workspace_artifact"]
 
         second = client.post(
             "/api/jobs",

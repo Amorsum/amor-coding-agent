@@ -295,7 +295,7 @@ def _run_attempt(
         )
         final_status = TerminalStatus(state.phase.value)
 
-    diff = workspace.diff()
+    diff = workspace.full_patch()
     evidence_present = all(path in state.relevant_files for path in task.required_evidence_paths)
     outcome_matches = (
         final_status == task.expected_status

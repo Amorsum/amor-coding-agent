@@ -16,6 +16,7 @@ from amor.web.artifacts import ArtifactNotFound, ArtifactStore, InvalidArtifact
 from amor.web.jobs import (
     ClarificationRequest,
     ContractEditRequest,
+    DeliveryRequest,
     ExecutionRequest,
     JobConflict,
     JobNotFound,
@@ -40,7 +41,7 @@ def create_app(
 
     app = FastAPI(
         title="AMOR Local Workbench API",
-        version="0.11.0",
+        version="0.12.0",
         description="Local task execution and artifact inspection API.",
         lifespan=lifespan,
     )
@@ -123,6 +124,15 @@ def create_app(
     def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
         _require_local_origin(request)
         return _job_call(lambda: manager.cancel(job_id))
+
+    @app.post("/api/jobs/{job_id}/deliver", status_code=202)
+    def deliver_job(
+        job_id: str,
+        payload: DeliveryRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_local_origin(request)
+        return _job_call(lambda: manager.start_delivery(job_id, payload))
 
     @app.get("/api/jobs/{job_id}/events")
     async def stream_job_events(

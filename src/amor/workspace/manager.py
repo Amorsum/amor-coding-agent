@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +37,22 @@ class IsolatedWorkspace:
 
     def diff(self) -> str:
         return _run_git(["diff", "--no-ext-diff", "--"], self.root)
+
+    def full_patch(self) -> str:
+        # A temporary index captures tracked, deleted, renamed, and new files without
+        # mutating the detached worktree's real index. Plain `git diff` omits untracked
+        # files and therefore cannot be used as a complete delivery artifact.
+        with tempfile.TemporaryDirectory(prefix="amor-index-") as temporary:
+            environment = os.environ.copy()
+            environment["GIT_INDEX_FILE"] = str(Path(temporary) / "index")
+            _run_git(["read-tree", "HEAD"], self.root, environment)
+            _run_git(["add", "--all"], self.root, environment)
+            patch = _run_git(
+                ["diff", "--cached", "--binary", "--no-ext-diff", "--"],
+                self.root,
+                environment,
+            )
+            return patch + "\n" if patch else ""
 
     def changed_files(self) -> list[str]:
         output = _run_git(["status", "--short"], self.root)

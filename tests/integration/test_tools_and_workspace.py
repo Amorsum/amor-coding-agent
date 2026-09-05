@@ -51,6 +51,24 @@ def test_patch_is_isolated_and_policy_is_recorded(tmp_path: Path) -> None:
     assert '"before_sha256"' in trace_text
 
 
+def test_workspace_diff_includes_untracked_files(tmp_path: Path) -> None:
+    layout = BenchmarkLayout(project_root() / "benchmarks")
+    workspace = WorkspaceManager().create_from_fixture(
+        layout.fixtures / "python_utils",
+        tmp_path / "run",
+    )
+    (workspace.root / "src" / "new_module.py").write_text(
+        "VALUE = 42\n",
+        encoding="utf-8",
+    )
+
+    patch = workspace.full_patch()
+
+    assert "new file mode" in patch
+    assert "src/new_module.py" in patch
+    assert "+VALUE = 42" in patch
+
+
 def test_unapproved_command_never_executes(tmp_path: Path) -> None:
     layout = BenchmarkLayout(project_root() / "benchmarks")
     task = load_task(layout, "py_utils_average_empty")
@@ -73,4 +91,3 @@ def test_unapproved_command_never_executes(tmp_path: Path) -> None:
 
     assert not result.ok
     assert not (workspace.root / "should-not-exist").exists()
-

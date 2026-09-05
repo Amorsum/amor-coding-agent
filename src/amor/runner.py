@@ -71,7 +71,7 @@ def run_demo(project_root: Path, artifacts_root: Path, task_ids: list[str] | Non
             )
             final_status = TerminalStatus(state.phase.value)
 
-        diff = workspace.diff()
+        diff = workspace.full_patch()
         report = RunReport(
             run_id=run_id,
             task=task,

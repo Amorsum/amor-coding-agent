@@ -212,7 +212,7 @@ def run_repository_task(
         state=state,
         verification=verification,
         verification_history=verification_history,
-        git_diff=workspace.diff(),
+        git_diff=workspace.full_patch(),
         trace_path=str(trace_path.resolve()),
         workspace_path=str(workspace.root.resolve()),
         started_at=state.started_at,

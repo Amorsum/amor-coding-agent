@@ -2,7 +2,7 @@
 
 AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动的本地 Coding Agent。当前版本支持固定 Benchmark 演示，以及对干净的本地 Git 仓库运行自然语言修复任务。
 
-`v0.11.0` 补齐验收契约交互闭环：规划器提出问题后，用户可以在同一任务中逐项回答并触发独立重规划，也可以直接编辑契约的验收条件、保持行为、边界情况、写入范围和验证命令。每次变化都会生成不可变修订、重新计算 SHA-256，并使旧审批失效。
+`v0.12.0` 增加已验收补丁的安全交付：成功任务可以在新的独立 worktree 中创建本地分支、应用同一 SHA-256 补丁、重新运行相同 Verifier，并可选生成本地 commit。原仓库当前分支与工作副本不会被切换或修改，也不会自动推送远端。
 
 ## 当前可运行链路
 
@@ -62,6 +62,9 @@ $env:OPENAI_API_KEY = "your-api-key"
 - 通过 SSE 实时展示状态变化、模型轮次、工具结果和 Verifier 事件
 - 协作式取消：队列任务立即取消；运行任务在当前模型请求或验证子进程的安全边界停止
 - 展示最终状态、Token、验证历史和 Git Diff
+- 对 Git Diff 生成 SHA-256 指纹，并完整包含受范围约束的新文件
+- 将已验收补丁应用到新的本地分支，在交付 worktree 中重新验收并可选 commit
+- 交付前检查仓库基准、工作区、契约哈希和补丁哈希；任一漂移都会拒绝操作
 - 刷新页面后从 `artifacts/jobs/` 恢复任务记录；服务重启时未完成任务会明确标记为中断
 
 “实验分析”页签继续提供：
@@ -72,7 +75,7 @@ $env:OPENAI_API_KEY = "your-api-key"
 - Verifier 检查、结构化计划、状态轨迹和 Git Diff
 - Fake Provider 的显式证据边界提示
 
-网页任务仍遵守 CLI 的全部边界：目标仓库必须已经提交且工作区干净，修改只发生在隔离 worktree 中，验证命令必须预先批准，成功后不会自动提交、推送或写回原仓库。当前版本仍在宿主机子进程中执行目标项目代码，因此不能部署为允许陌生用户提交仓库或命令的公网服务。
+网页任务仍遵守 CLI 的全部边界：目标仓库必须已经提交且工作区干净，Agent 修改和补丁交付分别发生在隔离 worktree 中，验证命令必须预先批准。只有用户再次确认后才会创建新的本地分支并可选提交；原仓库当前分支不会切换，系统也不会自动推送。当前版本仍在宿主机子进程中执行目标项目代码，因此不能部署为允许陌生用户提交仓库或命令的公网服务。
 
 前端开发模式下，在另一个终端进入 `web/` 运行 `npm run dev`；开发服务器会把 `/api` 转发到本机 `8765` 端口。
 
@@ -280,6 +283,7 @@ Web 任务还会写入：
 - `artifacts/jobs/<job-id>/job.json`：不含凭据的任务状态、审批信息和实时事件快照
 - `artifacts/plans/<plan-id>/`：验收契约、中文报告和规划轨迹
 - `artifacts/runs/<run-id>/`：执行报告、验证契约、轨迹和隔离 worktree
+- `artifacts/jobs/<job-id>/deliveries/`：交付报告、二次验收现场和独立交付 worktree
 
 ## 安全边界
 
@@ -306,6 +310,6 @@ docs/                   架构决策
 web/                    Vite + React 可观测工作台
 ```
 
-模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)。
+模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)，第十二迭代的补丁交付边界见 [ADR 0012](./docs/adr/0012-verified-patch-delivery.md)。
 
 完整产品规划见 [AMOR-Coding-Agent项目实现方案.md](./AMOR-Coding-Agent项目实现方案.md)。
