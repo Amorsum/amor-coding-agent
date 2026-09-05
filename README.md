@@ -115,11 +115,11 @@ $env:OPENAI_API_KEY = "your-api-key"
 ```powershell
 .venv\Scripts\amor stage-showcase `
   --showcase <showcase-id> `
-  --output public-site `
+  --output out `
   --confirm-public
 ```
 
-仓库根目录的 `.openai/hosting.json` 只将 `public-site/` 声明为静态发布内容。当前公开地址计划绑定为 `https://amor.amorsum.top`；更新线上报告时，需要重新导出、暂存并发布一个新版本，旧内容不会在没有确认的情况下自动变化。
+仓库根目录的 `.openai/hosting.json` 只将 `out/` 声明为静态发布内容。当前公开地址计划绑定为 `https://amor.amorsum.top`；更新线上报告时，需要重新导出、暂存并发布一个新版本，旧内容不会在没有确认的情况下自动变化。
 
 ## 运行 Benchmark
 
@@ -358,7 +358,7 @@ benchmarks/hidden_tests Verifier 专用隐藏测试
 tests/                  单元、集成和端到端测试
 docs/                   架构决策
 web/                    Vite + React 可观测工作台
-public-site/            经确认并验证的公网静态页面
+out/                    经确认并验证的公网静态页面
 .openai/hosting.json    公网托管的静态目录边界
 ```
 

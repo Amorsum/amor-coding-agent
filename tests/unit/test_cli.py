@@ -114,12 +114,12 @@ def test_showcase_export_requires_an_explicit_experiment_and_confirmation() -> N
     assert arguments.confirm_public is True
 
 
-def test_stage_showcase_defaults_to_a_dedicated_public_directory() -> None:
+def test_stage_showcase_defaults_to_a_supported_static_directory() -> None:
     arguments = build_parser().parse_args(
         ["stage-showcase", "--showcase", "0123456789abcdef"]
     )
 
     assert arguments.command == "stage-showcase"
     assert arguments.artifacts == Path("artifacts")
-    assert arguments.output == Path("public-site")
+    assert arguments.output == Path("out")
     assert arguments.confirm_public is False

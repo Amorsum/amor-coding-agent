@@ -195,7 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stage.add_argument("--artifacts", type=Path, default=Path("artifacts"))
     stage.add_argument("--showcase", required=True, help="16-character showcase id")
-    stage.add_argument("--output", type=Path, default=Path("public-site"))
+    stage.add_argument("--output", type=Path, default=Path("out"))
     stage.add_argument(
         "--confirm-public",
         action="store_true",
