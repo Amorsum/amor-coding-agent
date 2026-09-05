@@ -11,9 +11,15 @@ from pathlib import Path
 from threading import Event, RLock
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from amor.acceptance import AcceptancePlan, load_acceptance_plan, run_acceptance_planning
+from amor.acceptance import (
+    AcceptancePlan,
+    PythonAcceptanceCase,
+    load_acceptance_plan,
+    run_acceptance_planning,
+    write_acceptance_plan,
+)
 from amor.context import ContextStrategy
 from amor.domain import RunLimits, RunReport
 from amor.local_runner import run_repository_task
@@ -40,6 +46,7 @@ class JobConflict(JobError):
 class JobStatus(StrEnum):
     QUEUED = "QUEUED"
     PLANNING = "PLANNING"
+    REPLANNING = "REPLANNING"
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
     NEEDS_INPUT = "NEEDS_INPUT"
     EXECUTION_QUEUED = "EXECUTION_QUEUED"
@@ -119,6 +126,77 @@ class ExecutionRequest(BaseModel):
     confirm_send_code: Literal[True]
 
 
+class ClarificationAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1, max_length=1_000)
+    answer: str = Field(min_length=1, max_length=4_000)
+
+    @field_validator("question", "answer")
+    @classmethod
+    def clean_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("clarification text must not be blank")
+        return cleaned
+
+
+class ClarificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    answers: list[ClarificationAnswer] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def questions_are_unique(self) -> "ClarificationRequest":
+        questions = [item.question for item in self.answers]
+        if len(questions) != len(set(questions)):
+            raise ValueError("clarification questions must be unique")
+        return self
+
+
+class ContractEditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
+    preserved_behaviors: list[str] = Field(default_factory=list, max_length=20)
+    edge_cases: list[str] = Field(default_factory=list, max_length=20)
+    allowed_paths: list[str] = Field(min_length=1, max_length=30)
+    validation_commands: list[list[str]] = Field(min_length=1, max_length=10)
+    python_cases: list[PythonAcceptanceCase] = Field(min_length=1, max_length=20)
+    summary: str = Field(min_length=1, max_length=1_000)
+    revision_note: str = Field(default="人工编辑契约", min_length=1, max_length=500)
+
+    @field_validator(
+        "acceptance_criteria",
+        "preserved_behaviors",
+        "edge_cases",
+        "allowed_paths",
+    )
+    @classmethod
+    def clean_text_items(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values]
+        if any(not value for value in cleaned):
+            raise ValueError("list values must not be empty")
+        return cleaned
+
+    @field_validator("validation_commands")
+    @classmethod
+    def commands_are_argv(cls, commands: list[list[str]]) -> list[list[str]]:
+        if any(not command or any(not item for item in command) for command in commands):
+            raise ValueError("validation commands must be non-empty argv arrays")
+        return commands
+
+    @field_validator("summary", "revision_note")
+    @classmethod
+    def clean_summary(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("contract text must not be blank")
+        return cleaned
+
+
 class JobEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -128,6 +206,25 @@ class JobEvent(BaseModel):
     phase: str
     message: str
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ClarificationRound(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    based_on_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    answers: list[ClarificationAnswer]
+    created_at: datetime
+
+
+class ContractRevision(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    revision: int = Field(ge=1)
+    source: Literal["planner", "clarification", "manual"]
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifact: str = Field(min_length=1, max_length=2_000)
+    note: str = Field(min_length=1, max_length=500)
+    created_at: datetime
 
 
 class JobSnapshot(BaseModel):
@@ -143,6 +240,8 @@ class JobSnapshot(BaseModel):
     run: dict[str, Any] | None = None
     run_artifact: str | None = None
     error: str | None = None
+    clarifications: list[ClarificationRound] = Field(default_factory=list)
+    contract_revisions: list[ContractRevision] = Field(default_factory=list)
     events: list[JobEvent] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -210,6 +309,18 @@ class TaskJobManager:
         with self._lock:
             return self._public_snapshot(self._get(job_id).snapshot, include_events=True)
 
+    def get_contract_revision(self, job_id: str, revision: int) -> dict[str, Any]:
+        with self._lock:
+            snapshot = self._get(job_id).snapshot
+            metadata = next(
+                (item for item in snapshot.contract_revisions if item.revision == revision),
+                None,
+            )
+            if metadata is None:
+                raise JobNotFound("contract revision not found")
+            path = self._artifact_path(metadata.artifact)
+            return load_acceptance_plan(path).model_dump(mode="json")
+
     def events_after(self, job_id: str, sequence: int) -> tuple[list[dict[str, Any]], bool]:
         with self._lock:
             snapshot = self._get(job_id).snapshot
@@ -227,7 +338,7 @@ class TaskJobManager:
         if profile.dirty_worktree:
             raise JobConflict("repository must be clean before acceptance planning")
         if "Python" not in profile.languages:
-            raise JobConflict("v0.10 acceptance planning currently supports Python repositories only")
+            raise JobConflict("acceptance planning currently supports Python repositories only")
         self.provider_factory(
             request.provider,
             model=request.model,
@@ -273,6 +384,107 @@ class TaskJobManager:
             managed.future = self._executor.submit(self._run_execution, job_id)
             return self._public_snapshot(managed.snapshot, include_events=True)
 
+    def answer_questions(
+        self,
+        job_id: str,
+        request: ClarificationRequest,
+    ) -> dict[str, Any]:
+        with self._lock:
+            managed = self._get(job_id)
+            if managed.snapshot.status != JobStatus.NEEDS_INPUT:
+                raise JobConflict("job is not waiting for clarification")
+            plan = self._load_job_plan(managed.snapshot)
+            if plan.contract_sha256 != request.contract_sha256:
+                raise JobConflict("contract changed after it was reviewed; refresh before answering")
+            expected = set(plan.questions)
+            received = {item.question for item in request.answers}
+            if received != expected:
+                missing = sorted(expected - received)
+                unknown = sorted(received - expected)
+                details = []
+                if missing:
+                    details.append("missing: " + "; ".join(missing))
+                if unknown:
+                    details.append("unknown: " + "; ".join(unknown))
+                raise JobConflict("answers must match the current questions (" + ", ".join(details) + ")")
+            self._require_unchanged_repository(managed.snapshot, plan)
+            planning = managed.snapshot.planning_request
+            self.provider_factory(
+                planning.provider,
+                model=planning.model,
+                max_output_tokens=planning.max_output_tokens,
+            )
+            managed.snapshot.clarifications.append(
+                ClarificationRound(
+                    based_on_sha256=plan.contract_sha256,
+                    answers=request.answers,
+                    created_at=_utc_now(),
+                )
+            )
+            managed.cancel_event.clear()
+            managed.snapshot.status = JobStatus.QUEUED
+            managed.snapshot.phase = "REVISION_QUEUED"
+            managed.snapshot.error = None
+            self._append_event_locked(
+                managed,
+                "clarification",
+                "补充信息已保存，契约修订进入队列",
+                payload={"answer_count": len(request.answers)},
+            )
+            managed.future = self._executor.submit(self._run_planning, job_id)
+            return self._public_snapshot(managed.snapshot, include_events=True)
+
+    def edit_contract(
+        self,
+        job_id: str,
+        request: ContractEditRequest,
+    ) -> dict[str, Any]:
+        with self._lock:
+            managed = self._get(job_id)
+            if managed.snapshot.status not in {
+                JobStatus.AWAITING_APPROVAL,
+                JobStatus.NEEDS_INPUT,
+            }:
+                raise JobConflict("job contract cannot be edited in its current status")
+            current = self._load_job_plan(managed.snapshot)
+            if current.contract_sha256 != request.contract_sha256:
+                raise JobConflict("contract changed after it was opened; refresh before saving")
+            self._require_unchanged_repository(managed.snapshot, current)
+            payload = current.model_dump(mode="json")
+            payload.update(
+                {
+                    "status": "READY",
+                    "acceptance_criteria": request.acceptance_criteria,
+                    "preserved_behaviors": request.preserved_behaviors,
+                    "edge_cases": request.edge_cases,
+                    "allowed_paths": request.allowed_paths,
+                    "validation_commands": request.validation_commands,
+                    "python_cases": [
+                        item.model_dump(mode="json") for item in request.python_cases
+                    ],
+                    "questions": [],
+                    "summary": request.summary,
+                    "created_at": _utc_now(),
+                }
+            )
+            plan = self._record_contract_revision_locked(
+                managed,
+                payload,
+                source="manual",
+                note=request.revision_note,
+            )
+            managed.snapshot.status = JobStatus.AWAITING_APPROVAL
+            managed.snapshot.phase = "AWAITING_APPROVAL"
+            managed.snapshot.execution_request = None
+            managed.snapshot.error = None
+            self._append_event_locked(
+                managed,
+                "contract_edited",
+                "人工修改已冻结为新的契约版本，等待重新审批",
+                payload={"contract_sha256": plan.contract_sha256},
+            )
+            return self._public_snapshot(managed.snapshot, include_events=True)
+
     def cancel(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             managed = self._get(job_id)
@@ -308,9 +520,28 @@ class TaskJobManager:
         if managed.cancel_event.is_set():
             self._finish_cancelled(job_id)
             return
-        self._set_status(job_id, JobStatus.PLANNING, "PLANNING", "独立规划器正在读取仓库证据")
         request = managed.snapshot.planning_request
         try:
+            current_plan = (
+                self._load_job_plan(managed.snapshot)
+                if managed.snapshot.plan_artifact is not None
+                else None
+            )
+            revision_context = self._revision_context(managed.snapshot, current_plan)
+            if revision_context is None:
+                self._set_status(
+                    job_id,
+                    JobStatus.PLANNING,
+                    "PLANNING",
+                    "独立规划器正在读取仓库证据",
+                )
+            else:
+                self._set_status(
+                    job_id,
+                    JobStatus.REPLANNING,
+                    "REPLANNING",
+                    "独立规划器正在根据补充信息修订契约",
+                )
             provider = self.provider_factory(
                 request.provider,
                 model=request.model,
@@ -320,8 +551,16 @@ class TaskJobManager:
                 repository=Path(request.repository),
                 instruction=request.instruction,
                 acceptance_criteria=request.acceptance_criteria,
-                allowed_paths=request.allowed_paths,
-                validation_commands=request.validation_commands or None,
+                allowed_paths=(
+                    current_plan.allowed_paths
+                    if current_plan is not None
+                    else request.allowed_paths
+                ),
+                validation_commands=(
+                    current_plan.validation_commands
+                    if current_plan is not None
+                    else request.validation_commands or None
+                ),
                 provider_name=request.provider,
                 model=request.model,
                 provider=provider,
@@ -331,14 +570,26 @@ class TaskJobManager:
                 context_budget_chars=request.context_budget_chars,
                 should_cancel=managed.cancel_event.is_set,
                 trace_listener=self._trace_listener(job_id),
+                revision_context=revision_context,
             )
             if managed.cancel_event.is_set():
                 self._finish_cancelled(job_id)
                 return
-            plan_path = self.artifacts_root / "plans" / plan.plan_id / "acceptance-plan.json"
             with self._lock:
-                managed.snapshot.plan = plan.model_dump(mode="json")
-                managed.snapshot.plan_artifact = self._relative_artifact(plan_path)
+                source: Literal["planner", "clarification"] = (
+                    "clarification" if revision_context is not None else "planner"
+                )
+                note = (
+                    f"根据第 {len(managed.snapshot.clarifications)} 轮补充信息重新规划"
+                    if revision_context is not None
+                    else "独立规划器生成初始契约"
+                )
+                plan = self._record_contract_revision_locked(
+                    managed,
+                    plan.model_dump(mode="json"),
+                    source=source,
+                    note=note,
+                )
                 if plan.status == "READY":
                     managed.snapshot.status = JobStatus.AWAITING_APPROVAL
                     managed.snapshot.phase = "AWAITING_APPROVAL"
@@ -527,15 +778,69 @@ class TaskJobManager:
         managed.snapshot.updated_at = now
         self._persist_locked(managed.snapshot)
 
-    def _load_job_plan(self, snapshot: JobSnapshot) -> AcceptancePlan:
-        if not snapshot.plan_artifact:
-            raise JobConflict("acceptance plan artifact is missing")
-        path = (self.artifacts_root / snapshot.plan_artifact).resolve()
+    def _record_contract_revision_locked(
+        self,
+        managed: _ManagedJob,
+        payload: dict[str, Any],
+        *,
+        source: Literal["planner", "clarification", "manual"],
+        note: str,
+    ) -> AcceptancePlan:
+        revision = len(managed.snapshot.contract_revisions) + 1
+        path = self.jobs_root / managed.snapshot.job_id / "contracts" / f"revision-{revision:04d}.json"
+        plan = write_acceptance_plan(path, payload)
+        artifact = self._relative_artifact(path)
+        managed.snapshot.plan = plan.model_dump(mode="json")
+        managed.snapshot.plan_artifact = artifact
+        managed.snapshot.contract_revisions.append(
+            ContractRevision(
+                revision=revision,
+                source=source,
+                contract_sha256=plan.contract_sha256,
+                artifact=artifact,
+                note=note,
+                created_at=_utc_now(),
+            )
+        )
+        return plan
+
+    @staticmethod
+    def _revision_context(
+        snapshot: JobSnapshot,
+        current_plan: AcceptancePlan | None,
+    ) -> dict[str, Any] | None:
+        if current_plan is None or not snapshot.clarifications:
+            return None
+        return {
+            "previous_contract": current_plan.model_dump(mode="json"),
+            "clarification_rounds": [
+                item.model_dump(mode="json") for item in snapshot.clarifications
+            ],
+        }
+
+    @staticmethod
+    def _require_unchanged_repository(
+        snapshot: JobSnapshot,
+        plan: AcceptancePlan,
+    ) -> None:
+        profile = RepositoryProfiler().profile(Path(snapshot.planning_request.repository))
+        if profile.dirty_worktree:
+            raise JobConflict("repository changed after planning; restore a clean worktree first")
+        if profile.head_commit != plan.baseline_commit:
+            raise JobConflict("repository HEAD changed after planning; create a new task")
+
+    def _artifact_path(self, artifact: str) -> Path:
+        path = (self.artifacts_root / artifact).resolve()
         try:
             path.relative_to(self.artifacts_root)
         except ValueError as exc:
-            raise JobConflict("acceptance plan escaped the artifact root") from exc
-        return load_acceptance_plan(path)
+            raise JobConflict("job artifact escaped the artifact root") from exc
+        return path
+
+    def _load_job_plan(self, snapshot: JobSnapshot) -> AcceptancePlan:
+        if not snapshot.plan_artifact:
+            raise JobConflict("acceptance plan artifact is missing")
+        return load_acceptance_plan(self._artifact_path(snapshot.plan_artifact))
 
     def _managed(self, job_id: str) -> _ManagedJob:
         with self._lock:
@@ -580,9 +885,27 @@ class TaskJobManager:
                 continue
             managed = _ManagedJob(snapshot=snapshot)
             self._jobs[snapshot.job_id] = managed
+            if snapshot.plan_artifact and snapshot.plan and not snapshot.contract_revisions:
+                try:
+                    plan = self._load_job_plan(snapshot)
+                except (RuntimeError, ValueError):
+                    pass
+                else:
+                    snapshot.contract_revisions.append(
+                        ContractRevision(
+                            revision=1,
+                            source="planner",
+                            contract_sha256=plan.contract_sha256,
+                            artifact=snapshot.plan_artifact,
+                            note="v0.10 迁移的初始契约",
+                            created_at=plan.created_at,
+                        )
+                    )
+                    self._persist_locked(snapshot)
             if snapshot.status in {
                 JobStatus.QUEUED,
                 JobStatus.PLANNING,
+                JobStatus.REPLANNING,
                 JobStatus.EXECUTION_QUEUED,
                 JobStatus.RUNNING,
                 JobStatus.CANCEL_REQUESTED,

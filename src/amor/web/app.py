@@ -14,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 
 from amor.web.artifacts import ArtifactNotFound, ArtifactStore, InvalidArtifact
 from amor.web.jobs import (
+    ClarificationRequest,
+    ContractEditRequest,
     ExecutionRequest,
     JobConflict,
     JobNotFound,
@@ -38,7 +40,7 @@ def create_app(
 
     app = FastAPI(
         title="AMOR Local Workbench API",
-        version="0.10.0",
+        version="0.11.0",
         description="Local task execution and artifact inspection API.",
         lifespan=lifespan,
     )
@@ -85,6 +87,28 @@ def create_app(
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str) -> dict[str, Any]:
         return _job_call(lambda: manager.get_job(job_id))
+
+    @app.get("/api/jobs/{job_id}/contracts/{revision}")
+    def get_contract_revision(job_id: str, revision: int) -> dict[str, Any]:
+        return _job_call(lambda: manager.get_contract_revision(job_id, revision))
+
+    @app.post("/api/jobs/{job_id}/clarify", status_code=202)
+    def clarify_job(
+        job_id: str,
+        payload: ClarificationRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_local_origin(request)
+        return _job_call(lambda: manager.answer_questions(job_id, payload))
+
+    @app.post("/api/jobs/{job_id}/contract")
+    def edit_job_contract(
+        job_id: str,
+        payload: ContractEditRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_local_origin(request)
+        return _job_call(lambda: manager.edit_contract(job_id, payload))
 
     @app.post("/api/jobs/{job_id}/approve", status_code=202)
     def approve_job(

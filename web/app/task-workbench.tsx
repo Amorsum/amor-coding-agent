@@ -9,14 +9,18 @@ import {
   Code2,
   FileDiff,
   FolderGit2,
+  History,
   KeyRound,
   ListChecks,
   LoaderCircle,
+  MessageSquareText,
+  PencilLine,
   Play,
   Plus,
   Send,
   ShieldCheck,
   Square,
+  X,
   TerminalSquare,
 } from 'lucide-react';
 
@@ -108,6 +112,17 @@ type JobEvent = {
   payload: Record<string, unknown>;
 };
 
+type ClarificationAnswer = { question: string; answer: string };
+
+type ContractRevision = {
+  revision: number;
+  source: 'planner' | 'clarification' | 'manual';
+  contract_sha256: string;
+  artifact: string;
+  note: string;
+  created_at: string;
+};
+
 type Job = {
   job_id: string;
   status: string;
@@ -124,6 +139,12 @@ type Job = {
   plan: AcceptancePlan | null;
   run: RunResult | null;
   error: string | null;
+  clarifications: Array<{
+    based_on_sha256: string;
+    answers: ClarificationAnswer[];
+    created_at: string;
+  }>;
+  contract_revisions: ContractRevision[];
   events: JobEvent[];
   created_at: string;
   updated_at: string;
@@ -156,6 +177,7 @@ const initialForm: TaskForm = {
 const activeStatuses = new Set([
   'QUEUED',
   'PLANNING',
+  'REPLANNING',
   'EXECUTION_QUEUED',
   'RUNNING',
   'CANCEL_REQUESTED',
@@ -600,9 +622,9 @@ function JobDetail({
       )}
 
       {job.status === 'AWAITING_APPROVAL' && job.plan ? (
-        <ContractReview job={job} plan={job.plan} runtime={runtime} onUpdated={onUpdated} onError={onError} />
+        <ContractReview key={job.plan.contract_sha256} job={job} plan={job.plan} runtime={runtime} onUpdated={onUpdated} onError={onError} />
       ) : job.status === 'NEEDS_INPUT' && job.plan ? (
-        <NeedsInput plan={job.plan} />
+        <NeedsInput key={job.plan.contract_sha256} job={job} plan={job.plan} runtime={runtime} onUpdated={onUpdated} onError={onError} />
       ) : job.run ? (
         <RunEvidence job={job} run={job.run} />
       ) : (
@@ -632,6 +654,7 @@ function ContractReview({
   const [retries, setRetries] = useState('2');
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [editing, setEditing] = useState(false);
   const providerConfigured = runtime?.providers[provider] ?? false;
 
   const approve = async () => {
@@ -662,43 +685,28 @@ function ContractReview({
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
       <Card className="border-cyan-300/18 bg-card/75">
         <CardHeader className="border-b border-white/7">
-          <CardTitle className="flex items-center gap-2"><ClipboardCheck className="size-4 text-cyan-300" />审阅验收契约</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2"><ClipboardCheck className="size-4 text-cyan-300" />审阅验收契约</CardTitle>
+            {!editing && (
+              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                <PencilLine data-icon="inline-start" />编辑并生成新版本
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-6 pt-5">
-          <p className="text-sm leading-relaxed text-foreground/85">{plan.summary}</p>
-          <ContractList title="验收条件" items={plan.acceptance_criteria} />
-          <div className="grid gap-5 lg:grid-cols-2">
-            <ContractList title="必须保持" items={plan.preserved_behaviors} />
-            <ContractList title="边界情况" items={plan.edge_cases} />
-          </div>
-          <section>
-            <h3 className="contract-title">结构化外部用例 · {plan.python_cases.length}</h3>
-            <div className="space-y-3">
-              {plan.python_cases.map((item) => (
-                <div key={item.name} className="acceptance-case">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong>{item.name}</strong>
-                    <code>{item.module}.{item.callable}</code>
-                  </div>
-                  <p>参数：<code>{item.args_json}</code> · 预期：<code>{item.expectation === 'equals' ? item.expected_json : item.exception_type}</code></p>
-                  <p>{item.rationale}</p>
-                </div>
-              ))}
-            </div>
-          </section>
-          <div className="grid gap-5 lg:grid-cols-2">
-            <ContractList title="允许修改" items={plan.allowed_paths} code />
-            <ContractList
-              title="验证命令"
-              items={plan.validation_commands.map((command) => JSON.stringify(command))}
-              code
+          {editing ? (
+            <ContractEditor
+              job={job}
+              plan={plan}
+              onSaved={onUpdated}
+              onCancel={() => setEditing(false)}
+              onError={onError}
             />
-          </div>
-          <ContractList title="规划证据" items={plan.evidence_files} code />
-          <div className="rounded-lg border border-white/8 bg-black/20 p-3">
-            <p className="text-xs text-muted-foreground">契约 SHA-256</p>
-            <code className="mt-1 block break-all text-xs text-cyan-100">{plan.contract_sha256}</code>
-          </div>
+          ) : (
+            <ContractContents plan={plan} />
+          )}
+          <RevisionHistory revisions={job.contract_revisions} currentSha={plan.contract_sha256} />
         </CardContent>
       </Card>
 
@@ -746,15 +754,253 @@ function ContractReview({
   );
 }
 
-function NeedsInput({ plan }: { plan: AcceptancePlan }) {
+function ContractContents({ plan }: { plan: AcceptancePlan }) {
   return (
-    <Card className="border-amber-300/20 bg-amber-300/[0.04]">
-      <CardHeader><CardTitle className="flex items-center gap-2"><CircleAlert className="size-4 text-amber-200" />需要补充信息</CardTitle></CardHeader>
+    <>
+      <p className="text-sm leading-relaxed text-foreground/85">{plan.summary}</p>
+      <ContractList title="验收条件" items={plan.acceptance_criteria} />
+      <div className="grid gap-5 lg:grid-cols-2">
+        <ContractList title="必须保持" items={plan.preserved_behaviors} />
+        <ContractList title="边界情况" items={plan.edge_cases} />
+      </div>
+      <section>
+        <h3 className="contract-title">结构化外部用例 · {plan.python_cases.length}</h3>
+        <div className="space-y-3">
+          {plan.python_cases.map((item) => (
+            <div key={item.name} className="acceptance-case">
+              <div className="flex flex-wrap items-center gap-2">
+                <strong>{item.name}</strong>
+                <code>{item.module}.{item.callable}</code>
+              </div>
+              <p>参数：<code>{item.args_json}</code> · 预期：<code>{item.expectation === 'equals' ? item.expected_json : item.exception_type}</code></p>
+              <p>{item.rationale}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+      <div className="grid gap-5 lg:grid-cols-2">
+        <ContractList title="允许修改" items={plan.allowed_paths} code />
+        <ContractList
+          title="验证命令"
+          items={plan.validation_commands.map((command) => JSON.stringify(command))}
+          code
+        />
+      </div>
+      <ContractList title="规划证据" items={plan.evidence_files} code />
+      <div className="rounded-lg border border-white/8 bg-black/20 p-3">
+        <p className="text-xs text-muted-foreground">契约 SHA-256</p>
+        <code className="mt-1 block break-all text-xs text-cyan-100">{plan.contract_sha256}</code>
+      </div>
+    </>
+  );
+}
+
+function ContractEditor({
+  job,
+  plan,
+  onSaved,
+  onCancel,
+  onError,
+}: {
+  job: Job;
+  plan: AcceptancePlan;
+  onSaved: (job: Job) => void;
+  onCancel: () => void;
+  onError: (reason: unknown) => void;
+}) {
+  const [summary, setSummary] = useState(plan.summary);
+  const [criteria, setCriteria] = useState(plan.acceptance_criteria.join('\n'));
+  const [preserved, setPreserved] = useState(plan.preserved_behaviors.join('\n'));
+  const [edges, setEdges] = useState(plan.edge_cases.join('\n'));
+  const [allowedPaths, setAllowedPaths] = useState(plan.allowed_paths.join('\n'));
+  const [commands, setCommands] = useState(
+    plan.validation_commands.map((command) => JSON.stringify(command)).join('\n'),
+  );
+  const [note, setNote] = useState('人工修订验收契约');
+  const [submitting, setSubmitting] = useState(false);
+
+  const save = async () => {
+    setSubmitting(true);
+    try {
+      const updated = await api<Job>(`/api/jobs/${job.job_id}/contract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contract_sha256: plan.contract_sha256,
+          acceptance_criteria: lines(criteria),
+          preserved_behaviors: lines(preserved),
+          edge_cases: lines(edges),
+          allowed_paths: lines(allowedPaths),
+          validation_commands: parseCommands(commands),
+          python_cases: plan.python_cases,
+          summary: summary.trim(),
+          revision_note: note.trim(),
+        }),
+      });
+      onSaved(updated);
+    } catch (reason) {
+      onError(reason);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="contract-editor space-y-5">
+      <div className="rounded-lg border border-amber-300/20 bg-amber-300/[0.05] p-4 text-sm text-amber-100">
+        保存会生成新的契约哈希并使旧审批失效。结构化外部用例保持只读，避免人工文本与可执行验收意外脱节。
+      </div>
+      <Field label="契约摘要">
+        <textarea className="task-input min-h-24 resize-y" value={summary} onChange={(event) => setSummary(event.target.value)} />
+      </Field>
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Field label="验收条件" hint="每行一项，至少保留一项。">
+          <textarea className="task-input min-h-40 resize-y" value={criteria} onChange={(event) => setCriteria(event.target.value)} />
+        </Field>
+        <Field label="允许修改的路径" hint="每行一个 glob，至少保留一项。">
+          <textarea className="task-input min-h-40 resize-y font-mono" value={allowedPaths} onChange={(event) => setAllowedPaths(event.target.value)} />
+        </Field>
+        <Field label="必须保持的行为" hint="每行一项，可留空。">
+          <textarea className="task-input min-h-32 resize-y" value={preserved} onChange={(event) => setPreserved(event.target.value)} />
+        </Field>
+        <Field label="边界情况" hint="每行一项，可留空。">
+          <textarea className="task-input min-h-32 resize-y" value={edges} onChange={(event) => setEdges(event.target.value)} />
+        </Field>
+      </div>
+      <Field label="验证命令" hint="每行一个 JSON 参数数组，至少保留一条。">
+        <textarea className="task-input min-h-28 resize-y font-mono" value={commands} onChange={(event) => setCommands(event.target.value)} />
+      </Field>
+      <Field label="本次修改说明">
+        <input className="task-input" value={note} onChange={(event) => setNote(event.target.value)} />
+      </Field>
+      <div className="flex flex-wrap justify-end gap-3">
+        <Button variant="outline" onClick={onCancel} disabled={submitting}>
+          <X data-icon="inline-start" />取消编辑
+        </Button>
+        <Button
+          className="bg-cyan-300 text-slate-950 hover:bg-cyan-200"
+          onClick={() => void save()}
+          disabled={submitting || !summary.trim() || !lines(criteria).length || !lines(allowedPaths).length || !lines(commands).length || !note.trim()}
+        >
+          {submitting ? <LoaderCircle className="animate-spin" /> : <PencilLine />}
+          保存为新版本
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function NeedsInput({
+  job,
+  plan,
+  runtime,
+  onUpdated,
+  onError,
+}: {
+  job: Job;
+  plan: AcceptancePlan;
+  runtime: RuntimeInfo | null;
+  onUpdated: (job: Job) => void;
+  onError: (reason: unknown) => void;
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>(
+    Object.fromEntries(plan.questions.map((question) => [question, ''])),
+  );
+  const [editing, setEditing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const providerConfigured = runtime?.providers[job.planning_request.provider] ?? false;
+
+  const clarify = async () => {
+    setSubmitting(true);
+    try {
+      const updated = await api<Job>(`/api/jobs/${job.job_id}/clarify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contract_sha256: plan.contract_sha256,
+          answers: plan.questions.map((question) => ({ question, answer: answers[question]?.trim() })),
+        }),
+      });
+      onUpdated(updated);
+    } catch (reason) {
+      onError(reason);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <Card className="border-cyan-300/18 bg-card/75">
+        <CardHeader><CardTitle className="flex items-center gap-2"><PencilLine className="size-4 text-cyan-300" />直接编辑契约</CardTitle></CardHeader>
+        <CardContent className="space-y-6">
+          <ContractEditor job={job} plan={plan} onSaved={onUpdated} onCancel={() => setEditing(false)} onError={onError} />
+          <RevisionHistory revisions={job.contract_revisions} currentSha={plan.contract_sha256} />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+      <Card className="border-amber-300/20 bg-amber-300/[0.04]">
+        <CardHeader><CardTitle className="flex items-center gap-2"><MessageSquareText className="size-4 text-amber-200" />回答规划问题</CardTitle></CardHeader>
+        <CardContent className="space-y-5">
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            回答会保存在当前任务中，独立规划器只修订受影响的契约内容；无需重新创建任务。
+          </p>
+          {plan.questions.map((question, index) => (
+            <Field key={question} label={`${index + 1}. ${question}`}>
+              <textarea
+                className="task-input min-h-28 resize-y"
+                value={answers[question] ?? ''}
+                onChange={(event) => setAnswers({ ...answers, [question]: event.target.value })}
+                placeholder="输入明确、可验收的答案"
+              />
+            </Field>
+          ))}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-5">
+            <Button variant="outline" onClick={() => setEditing(true)}>
+              <PencilLine data-icon="inline-start" />直接编辑现有契约
+            </Button>
+            <Button
+              className="bg-cyan-300 text-slate-950 hover:bg-cyan-200"
+              onClick={() => void clarify()}
+              disabled={submitting || !providerConfigured || plan.questions.some((question) => !answers[question]?.trim())}
+            >
+              {submitting ? <LoaderCircle className="animate-spin" /> : <Send />}
+              提交回答并修订
+            </Button>
+          </div>
+          {!providerConfigured && <p className="text-xs text-amber-200">规划 Provider 的服务端 Key 未配置，暂时只能直接编辑契约。</p>}
+        </CardContent>
+      </Card>
+      <RevisionHistory revisions={job.contract_revisions} currentSha={plan.contract_sha256} />
+    </div>
+  );
+}
+
+function RevisionHistory({ revisions, currentSha }: { revisions: ContractRevision[]; currentSha: string }) {
+  return (
+    <Card className="revision-card border-white/8 bg-black/15">
+      <CardHeader><CardTitle className="flex items-center gap-2 text-base"><History className="size-4 text-cyan-300" />契约修订记录</CardTitle></CardHeader>
       <CardContent>
-        <p className="text-sm text-muted-foreground">规划器没有冻结可执行契约。请根据问题完善任务描述后重新创建任务。</p>
-        <ul className="mt-5 space-y-3">
-          {plan.questions.map((question) => <li key={question} className="rounded-lg border border-amber-300/15 bg-black/10 p-4 text-sm">{question}</li>)}
-        </ul>
+        <div className="space-y-3">
+          {[...revisions].reverse().map((revision) => (
+            <div key={revision.revision} className="revision-row" data-current={revision.contract_sha256 === currentSha}>
+              <div className="flex flex-wrap items-center gap-2">
+                <strong>v{revision.revision}</strong>
+                <Badge variant="outline">{revisionSourceLabel(revision.source)}</Badge>
+                {revision.contract_sha256 === currentSha && <Badge className="bg-cyan-300 text-slate-950">当前</Badge>}
+              </div>
+              <p>{revision.note}</p>
+              <div className="flex flex-wrap justify-between gap-2 font-mono text-xs text-muted-foreground">
+                <span>{revision.contract_sha256.slice(0, 12)}</span>
+                <time>{formatDateTime(revision.created_at)}</time>
+              </div>
+            </div>
+          ))}
+        </div>
       </CardContent>
     </Card>
   );
@@ -768,7 +1014,7 @@ function LiveProgress({ job }: { job: Job }) {
         <CardHeader><CardTitle className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin text-cyan-300" />{job.status === 'CANCEL_REQUESTED' ? '正在安全停止' : '任务进行中'}</CardTitle></CardHeader>
         <CardContent>
           <div className="phase-track">
-            {['PLANNING', 'AWAITING_APPROVAL', 'RUNNING', 'SUCCEEDED'].map((phase) => (
+            {['PLANNING', 'REPLANNING', 'AWAITING_APPROVAL', 'RUNNING', 'SUCCEEDED'].map((phase) => (
               <div key={phase} data-active={job.phase === phase || job.status === phase}><span />{phaseLabel(phase)}</div>
             ))}
           </div>
@@ -928,14 +1174,18 @@ function formatDateTime(value: string): string {
 
 function jobStatusLabel(status: string): string {
   return {
-    QUEUED: '等待规划', PLANNING: '规划中', AWAITING_APPROVAL: '等待审批', NEEDS_INPUT: '需要信息',
+    QUEUED: '等待规划', PLANNING: '规划中', REPLANNING: '修订中', AWAITING_APPROVAL: '等待审批', NEEDS_INPUT: '需要信息',
     EXECUTION_QUEUED: '等待执行', RUNNING: '执行中', SUCCEEDED: '验收通过', FAILED: '执行失败',
     BLOCKED: '安全阻断', BUDGET_EXHAUSTED: '预算耗尽', CANCEL_REQUESTED: '正在取消', CANCELLED: '已取消',
   }[status] ?? status;
 }
 
 function phaseLabel(phase: string): string {
-  return { PLANNING: '验收规划', AWAITING_APPROVAL: '人工审批', RUNNING: 'Agent 执行', SUCCEEDED: '最终验收' }[phase] ?? phase;
+  return { PLANNING: '验收规划', REPLANNING: '契约修订', AWAITING_APPROVAL: '人工审批', RUNNING: 'Agent 执行', SUCCEEDED: '最终验收' }[phase] ?? phase;
+}
+
+function revisionSourceLabel(source: ContractRevision['source']): string {
+  return { planner: '初始规划', clarification: '问题回答', manual: '人工编辑' }[source];
 }
 
 function checkLabel(name: string): string {

@@ -2,12 +2,12 @@
 
 AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动的本地 Coding Agent。当前版本支持固定 Benchmark 演示，以及对干净的本地 Git 仓库运行自然语言修复任务。
 
-`v0.10.0` 将真实任务链路接入本地 Web 工作台：用户可在浏览器中创建任务、审阅并批准独立验收契约、实时观察 Agent 事件、取消运行，以及查看最终 Verifier 与 Git Diff。任务串行执行，API Key 仅从本地服务端环境变量读取，交互服务强制只监听回环地址。
+`v0.11.0` 补齐验收契约交互闭环：规划器提出问题后，用户可以在同一任务中逐项回答并触发独立重规划，也可以直接编辑契约的验收条件、保持行为、边界情况、写入范围和验证命令。每次变化都会生成不可变修订、重新计算 SHA-256，并使旧审批失效。
 
 ## 当前可运行链路
 
 ```text
-用户任务 → 独立只读验收规划 → 用户审批并冻结契约
+用户任务 → 独立只读验收规划 → 回答问题或人工修订 → 用户审批并冻结契约
         → 创建隔离 Git worktree → 搜索/局部读取 → 应用补丁
         → 可见测试 + 工作区外验收 → 失败反馈与有限修复
         → 最终验收 → diff、轨迹与报告
@@ -55,6 +55,9 @@ $env:OPENAI_API_KEY = "your-api-key"
 - 输入本地 Git 仓库绝对路径、任务、已知验收条件和允许修改范围
 - 使用独立只读模型会话生成验收契约
 - 逐项审阅结构化用例、验证命令、证据文件和契约哈希
+- 在同一任务中回答 `NEEDS_INPUT` 问题，并让独立规划器基于上一版契约局部修订
+- 直接编辑验收文本、允许路径和验证命令；结构化外部用例保持只读
+- 查看契约修订来源、说明、时间和哈希；任何修改都会使旧审批失效
 - 人工批准后启动执行 Agent
 - 通过 SSE 实时展示状态变化、模型轮次、工具结果和 Verifier 事件
 - 协作式取消：队列任务立即取消；运行任务在当前模型请求或验证子进程的安全边界停止
@@ -294,7 +297,7 @@ Web 任务还会写入：
 
 ```text
 src/amor/               核心实现
-src/amor/web/           只读 Artifact API 与静态工作台托管
+src/amor/web/           本地任务 API、Artifact API 与静态工作台托管
 benchmarks/fixtures/    示例目标仓库模板
 benchmarks/tasks/       Agent 可见任务规格
 benchmarks/hidden_tests Verifier 专用隐藏测试
@@ -303,6 +306,6 @@ docs/                   架构决策
 web/                    Vite + React 可观测工作台
 ```
 
-模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)。
+模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)。
 
 完整产品规划见 [AMOR-Coding-Agent项目实现方案.md](./AMOR-Coding-Agent项目实现方案.md)。

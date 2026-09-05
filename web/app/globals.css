@@ -166,8 +166,20 @@ select.task-input { @apply appearance-auto; }
 .acceptance-case code { @apply rounded bg-black/25 px-1.5 py-0.5 font-mono text-xs text-cyan-100; }
 .acceptance-case p { @apply mt-2 text-xs leading-relaxed text-muted-foreground; }
 
+.revision-row {
+  @apply rounded-lg border border-white/8 bg-white/[0.018] p-3;
+}
+
+.revision-row[data-current="true"] {
+  @apply border-cyan-300/25 bg-cyan-300/[0.045];
+}
+
+.revision-row > p {
+  @apply my-2 text-sm leading-relaxed text-foreground/85;
+}
+
 .phase-track {
-  @apply grid grid-cols-2 gap-3 sm:grid-cols-4;
+  @apply grid grid-cols-2 gap-3 sm:grid-cols-5;
 }
 
 .phase-track > div {

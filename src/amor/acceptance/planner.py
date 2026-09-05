@@ -21,7 +21,7 @@ from amor.trace import TraceRecorder
 from amor.workspace import WorkspaceManager
 
 
-ACCEPTANCE_PROMPT_VERSION = "v1-independent-acceptance-planner"
+ACCEPTANCE_PROMPT_VERSION = "v2-independent-acceptance-revision-planner"
 
 
 def run_acceptance_planning(
@@ -40,6 +40,7 @@ def run_acceptance_planning(
     context_budget_chars: int = 40_000,
     should_cancel: Callable[[], bool] | None = None,
     trace_listener: Callable[[dict[str, Any]], None] | None = None,
+    revision_context: dict[str, Any] | None = None,
 ) -> AcceptancePlan:
     if not instruction.strip():
         raise ValueError("task instruction must not be empty")
@@ -78,6 +79,7 @@ def run_acceptance_planning(
             "baseline_commit": workspace.baseline_commit,
             "provider": provider_name,
             "model": model,
+            "revision": revision_context is not None,
         },
     )
     policy = PolicyEngine(workspace.root, allowed_paths, approved_commands)
@@ -101,6 +103,7 @@ def run_acceptance_planning(
         allowed_paths,
         approved_commands,
         profile.model_dump(mode="json"),
+        revision_context,
     )
     token_usage: dict[str, int] = {}
     evidence_files: list[str] = []
@@ -110,7 +113,13 @@ def run_acceptance_planning(
         if should_cancel is not None and should_cancel():
             raise RuntimeError("acceptance planning cancelled")
         turn = provider.respond(
-            instructions=_instructions(instruction, acceptance_criteria, token_usage, max_total_tokens),
+            instructions=_instructions(
+                instruction,
+                acceptance_criteria,
+                token_usage,
+                max_total_tokens,
+                revising=revision_context is not None,
+            ),
             input_data=input_data,
             tools=schemas,
             previous_response_id=previous_response_id,
@@ -231,15 +240,23 @@ def _initial_prompt(
     allowed_paths: list[str],
     validation_commands: list[list[str]],
     profile: dict[str, Any],
+    revision_context: dict[str, Any] | None,
 ) -> str:
-    return (
+    prompt = (
         f"Task: {instruction}\n"
         f"User criteria: {json.dumps(criteria, ensure_ascii=False)}\n"
         f"User-approved write scope: {json.dumps(allowed_paths)}\n"
         f"Validation commands to preserve: {json.dumps(validation_commands)}\n"
         f"Repository profile: {json.dumps(profile, ensure_ascii=False)}\n"
-        "Inspect only enough source and existing tests to define an independent acceptance contract."
     )
+    if revision_context is not None:
+        prompt += (
+            "Existing contract and user clarification history: "
+            f"{json.dumps(revision_context, ensure_ascii=False)}\n"
+            "Revise only the sections affected by the answers. Preserve unaffected requirements, "
+            "cases, scope, commands, and evidence when they remain valid.\n"
+        )
+    return prompt + "Inspect only enough source and existing tests to define an independent acceptance contract."
 
 
 def _instructions(
@@ -247,7 +264,15 @@ def _instructions(
     criteria: list[str],
     usage: dict[str, int],
     limit: int,
+    *,
+    revising: bool,
 ) -> str:
+    revision_rule = (
+        "User clarification answers override the earlier ambiguity. Do not repeat an answered question "
+        "unless the answer conflicts with repository evidence; retain unaffected contract content. "
+        if revising
+        else ""
+    )
     return (
         f"Stable user task: {instruction}\n"
         f"Stable user criteria: {json.dumps(criteria, ensure_ascii=False)}\n"
@@ -258,7 +283,8 @@ def _instructions(
         "tests. Derive observable acceptance criteria, preserved behavior, boundary cases, and concrete "
         "JSON-safe Python function cases. Each case must name an existing module and callable. Use equals "
         "or raises expectations only. If business behavior is materially ambiguous, list concise questions; "
-        "otherwise submit the plan. Do not design around an implementation because none exists yet."
+        "otherwise submit the plan. Do not design around an implementation because none exists yet. "
+        + revision_rule
     )
 
 
