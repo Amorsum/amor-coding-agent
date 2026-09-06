@@ -11,8 +11,9 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from amor.profiler import RepositoryProfiler
 from amor.providers import ProviderCredentialStore
 from amor.showcase import ShowcaseError, ShowcaseExporter
 from amor.web.artifacts import ArtifactNotFound, ArtifactStore, InvalidArtifact
@@ -26,6 +27,7 @@ from amor.web.jobs import (
     PlanningRequest,
     TaskJobManager,
 )
+from amor.workspace import inspect_working_tree
 
 
 class ShowcaseRequest(BaseModel):
@@ -44,6 +46,20 @@ class ProviderCredentialRequest(BaseModel):
 
     api_key: SecretStr
     confirm_session_only: Literal[True]
+
+
+class RepositoryInspectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repository: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("repository")
+    @classmethod
+    def repository_is_absolute(cls, value: str) -> str:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise ValueError("repository must be an absolute path")
+        return str(path.resolve())
 
 
 def create_app(
@@ -69,7 +85,7 @@ def create_app(
 
     app = FastAPI(
         title="AMOR Local Workbench API",
-        version="0.18.0",
+        version="0.19.0",
         description="Local task execution and artifact inspection API.",
         lifespan=lifespan,
     )
@@ -86,7 +102,7 @@ def create_app(
     @app.middleware("http")
     async def protect_local_mutations(request: Request, call_next: Any):
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path.startswith(
-            ("/api/jobs", "/api/showcases", "/api/settings")
+            ("/api/jobs", "/api/showcases", "/api/settings", "/api/repositories")
         ):
             try:
                 _require_local_origin(request)
@@ -126,6 +142,23 @@ def create_app(
         credential_store.clear_session(provider)
         source = credential_store.source(provider)
         return {"provider": provider, "configured": source != "missing", "source": source}
+
+    @app.post("/api/repositories/inspect")
+    def inspect_repository(payload: RepositoryInspectionRequest, request: Request) -> dict[str, Any]:
+        _require_local_origin(request)
+        repository = Path(payload.repository)
+        profile = _job_call(
+            lambda: RepositoryProfiler().profile(repository).model_dump(mode="json")
+        )
+        state = _job_call(lambda: inspect_working_tree(repository))
+        return {
+            "root": profile["root"],
+            "languages": profile["languages"],
+            "head_commit": state.source_head_commit,
+            "dirty": state.dirty,
+            "changed_files": state.changed_files,
+            "capturable": True,
+        }
 
     @app.get("/api/jobs")
     def list_jobs() -> dict[str, Any]:

@@ -52,10 +52,11 @@ def run_repository_task(
     should_cancel: Callable[[], bool] | None = None,
     trace_listener: Callable[[dict[str, Any]], None] | None = None,
     sandbox: SandboxConfig | None = None,
+    baseline_commit: str | None = None,
 ) -> RunReport:
     repository = repository.resolve()
     profile = RepositoryProfiler().profile(repository)
-    if profile.dirty_worktree:
+    if profile.dirty_worktree and baseline_commit is None:
         raise RuntimeError("repository must be clean before an isolated AMOR run")
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
@@ -78,7 +79,8 @@ def run_repository_task(
     if acceptance_plan is not None:
         if acceptance_plan.status != "READY":
             raise ValueError("acceptance plan still requires user input")
-        if acceptance_plan.baseline_commit != profile.head_commit:
+        expected_baseline = baseline_commit or profile.head_commit
+        if acceptance_plan.baseline_commit != expected_baseline:
             raise ValueError("acceptance plan baseline no longer matches repository HEAD")
         if (
             acceptance_plan.instruction != task.instruction
@@ -92,7 +94,12 @@ def run_repository_task(
         resolved_plan_path = None
 
     run_dir = artifacts_root.resolve() / run_id / task_id
-    workspace = WorkspaceManager().create_from_repository(repository, run_dir)
+    workspace = WorkspaceManager().create_from_repository(
+        repository,
+        run_dir,
+        baseline_commit=baseline_commit,
+        require_clean=baseline_commit is None,
+    )
     if acceptance_plan is not None and acceptance_plan.baseline_commit != workspace.baseline_commit:
         raise ValueError("acceptance plan baseline changed while the run was starting")
     if resolved_plan_path is not None:

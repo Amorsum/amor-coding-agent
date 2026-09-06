@@ -41,6 +41,7 @@ def run_acceptance_planning(
     should_cancel: Callable[[], bool] | None = None,
     trace_listener: Callable[[dict[str, Any]], None] | None = None,
     revision_context: dict[str, Any] | None = None,
+    baseline_commit: str | None = None,
 ) -> AcceptancePlan:
     if not instruction.strip():
         raise ValueError("task instruction must not be empty")
@@ -53,8 +54,17 @@ def run_acceptance_planning(
 
     repository = repository.resolve()
     profile = RepositoryProfiler().profile(repository)
-    if profile.dirty_worktree:
+    if profile.dirty_worktree and baseline_commit is None:
         raise RuntimeError("repository must be clean before acceptance planning")
+    plan_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    plan_root = artifacts_root.resolve() / plan_id
+    workspace = WorkspaceManager().create_from_repository(
+        repository,
+        plan_root,
+        baseline_commit=baseline_commit,
+        require_clean=baseline_commit is None,
+    )
+    profile = RepositoryProfiler().profile(workspace.root)
     approved_commands = validation_commands or profile.suggested_validation_commands
     if not approved_commands:
         raise ValueError(
@@ -63,9 +73,6 @@ def run_acceptance_planning(
     if "Python" not in profile.languages:
         raise ValueError("v0.9 acceptance planning currently supports Python repositories only")
 
-    plan_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
-    plan_root = artifacts_root.resolve() / plan_id
-    workspace = WorkspaceManager().create_from_repository(repository, plan_root)
     trace = TraceRecorder(
         plan_root / "planner-trace.jsonl",
         f"plan_{plan_id}",

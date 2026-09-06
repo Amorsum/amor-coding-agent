@@ -187,6 +187,14 @@ type Job = {
     provider: ProviderName;
     model: string;
   };
+  working_tree_snapshot: {
+    source_head_commit: string;
+    tree_hash: string;
+    baseline_commit: string;
+    ref: string;
+    changed_files: string[];
+    created_at: string;
+  } | null;
   plan: AcceptancePlan | null;
   run: RunResult | null;
   error: string | null;
@@ -213,6 +221,16 @@ type TaskForm = {
   model: string;
   maxTokens: string;
   confirm: boolean;
+  confirmDirtySnapshot: boolean;
+};
+
+type RepositoryInspection = {
+  root: string;
+  languages: string[];
+  head_commit: string;
+  dirty: boolean;
+  changed_files: string[];
+  capturable: boolean;
 };
 
 const initialForm: TaskForm = {
@@ -225,6 +243,7 @@ const initialForm: TaskForm = {
   model: '',
   maxTokens: '40000',
   confirm: false,
+  confirmDirtySnapshot: false,
 };
 
 const activeStatuses = new Set([
@@ -363,6 +382,7 @@ export function TaskWorkbench() {
           model: form.model.trim(),
           max_tokens: Number(form.maxTokens),
           confirm_send_code: form.confirm,
+          confirm_dirty_snapshot: form.confirmDirtySnapshot,
         }),
       });
       await loadJobs(created.job_id);
@@ -512,6 +532,29 @@ function TaskCreationForm({
   onError: (reason: unknown) => void;
 }) {
   const configured = runtime?.providers[form.provider] ?? false;
+  const [inspection, setInspection] = useState<RepositoryInspection | null>(null);
+  const [inspecting, setInspecting] = useState(false);
+
+  const inspectRepository = async () => {
+    setInspecting(true);
+    try {
+      const result = await api<RepositoryInspection>('/api/repositories/inspect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repository: form.repository.trim() }),
+      });
+      setInspection(result);
+      onChange({ ...form, repository: result.root, confirmDirtySnapshot: false });
+    } catch (reason) {
+      setInspection(null);
+      onError(reason);
+    } finally {
+      setInspecting(false);
+    }
+  };
+  const repositoryReady = Boolean(
+    inspection && inspection.languages.includes('Python') && (!inspection.dirty || form.confirmDirtySnapshot),
+  );
   return (
     <form
       onSubmit={(event) => {
@@ -539,15 +582,56 @@ function TaskCreationForm({
       <Card className="border-white/8 bg-card/75">
         <CardHeader><CardTitle className="flex items-center gap-2"><FolderGit2 className="size-4 text-cyan-300" />仓库与任务</CardTitle></CardHeader>
         <CardContent className="grid gap-5">
-          <Field label="本地 Git 仓库绝对路径" hint="仓库必须已提交且工作区干净。">
-            <input
-              className="task-input font-mono"
-              value={form.repository}
-              onChange={(event) => onChange({ ...form, repository: event.target.value })}
-              placeholder="D:\projects\example"
-              required
-            />
+          <Field label="本地 Git 仓库绝对路径" hint="仓库必须至少提交过一次；未提交改动可在检查后创建受保护快照。">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <input
+                className="task-input font-mono"
+                value={form.repository}
+                onChange={(event) => {
+                  setInspection(null);
+                  onChange({ ...form, repository: event.target.value, confirmDirtySnapshot: false });
+                }}
+                placeholder="D:\projects\example"
+                required
+              />
+              <Button type="button" variant="outline" disabled={inspecting || !form.repository.trim()} onClick={() => void inspectRepository()}>
+                {inspecting ? <LoaderCircle className="animate-spin" /> : <FolderGit2 />}
+                检查仓库
+              </Button>
+            </div>
           </Field>
+          {inspection && (
+            <div className={inspection.dirty ? 'rounded-lg border border-amber-300/20 bg-amber-300/[0.04] p-4' : 'rounded-lg border border-emerald-400/20 bg-emerald-400/[0.035] p-4'}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="flex items-center gap-2 text-sm font-medium">
+                  {inspection.dirty ? <CircleAlert className="size-4 text-amber-200" /> : <Check className="size-4 text-emerald-300" />}
+                  {inspection.dirty ? `发现 ${inspection.changed_files.length} 个未提交文件` : '仓库已提交且工作区干净'}
+                </p>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline">{inspection.languages.length ? inspection.languages.join(' / ') : '未识别语言'}</Badge>
+                  <code className="text-xs text-muted-foreground">HEAD {inspection.head_commit.slice(0, 12)}</code>
+                </div>
+              </div>
+              {!inspection.languages.includes('Python') && (
+                <p className="mt-3 text-xs text-rose-200">v0.19 的真实任务暂只支持包含已跟踪 Python 文件的仓库。</p>
+              )}
+              {inspection.dirty && (
+                <>
+                  <div className="mt-3 max-h-28 overflow-auto rounded-md border border-white/8 bg-black/15 p-3 font-mono text-xs text-muted-foreground">
+                    {inspection.changed_files.map((path) => <div key={path}>{path}</div>)}
+                  </div>
+                  <label className="consent-row mt-3 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={form.confirmDirtySnapshot}
+                      onChange={(event) => onChange({ ...form, confirmDirtySnapshot: event.target.checked })}
+                    />
+                    <span>我确认把这些文件作为只读基线快照。AMOR 不修改原工作区；后续若文件发生变化，会停止任务并要求重新检查。</span>
+                  </label>
+                </>
+              )}
+            </div>
+          )}
           <Field label="要完成的任务">
             <textarea
               className="task-input min-h-28 resize-y"
@@ -640,13 +724,13 @@ function TaskCreationForm({
         </span>
       </label>
 
-      <ReadinessSummary form={form} runtime={runtime} />
+      <ReadinessSummary form={form} runtime={runtime} inspection={inspection} />
 
       <div className="flex justify-end">
         <Button
           type="submit"
           size="lg"
-          disabled={submitting || !form.confirm || !configured}
+          disabled={submitting || !form.confirm || !configured || !repositoryReady}
           className="bg-cyan-300 text-slate-950 hover:bg-cyan-200"
         >
           {submitting ? <LoaderCircle className="animate-spin" /> : <Send />}
@@ -753,12 +837,16 @@ function ProviderCredentialPanel({
   return <Card className="border-cyan-300/15 bg-card/75"><CardContent className="pt-5">{contents}</CardContent></Card>;
 }
 
-function ReadinessSummary({ form, runtime }: { form: TaskForm; runtime: RuntimeInfo | null }) {
+function ReadinessSummary({ form, runtime, inspection }: { form: TaskForm; runtime: RuntimeInfo | null; inspection: RepositoryInspection | null }) {
   const providerReady = runtime?.providers[form.provider] ?? false;
   const dockerReady = Boolean(runtime?.docker.engine_available && runtime?.docker.image_available);
   const checks = [
     { label: '模型凭据', ready: providerReady, detail: providerReady ? '已就绪' : '请在上方设置 API Key' },
-    { label: '仓库路径', ready: Boolean(form.repository.trim()), detail: form.repository.trim() ? '已填写' : '请填写绝对路径' },
+    {
+      label: '仓库状态',
+      ready: Boolean(inspection && inspection.languages.includes('Python') && (!inspection.dirty || form.confirmDirtySnapshot)),
+      detail: !inspection ? '请点击检查仓库' : !inspection.languages.includes('Python') ? '当前只支持 Python 仓库' : inspection.dirty && !form.confirmDirtySnapshot ? '请确认受保护快照' : inspection.dirty ? '未提交改动已确认纳入快照' : '工作区干净',
+    },
     { label: '任务描述', ready: Boolean(form.instruction.trim()), detail: form.instruction.trim() ? '已填写' : '请描述要完成的改动' },
     { label: '模型 ID', ready: Boolean(form.model.trim()), detail: form.model.trim() ? '已填写' : '请填写 Provider 支持的模型 ID' },
     { label: '发送确认', ready: form.confirm, detail: form.confirm ? '已确认' : '请确认代码可发送给模型服务' },
@@ -832,6 +920,15 @@ function JobDetail({
       {job.error && (
         <div className="rounded-lg border border-rose-400/25 bg-rose-400/[0.07] p-4 text-sm text-rose-100">
           {job.error}
+        </div>
+      )}
+
+      {job.working_tree_snapshot && (
+        <div className="rounded-lg border border-amber-300/20 bg-amber-300/[0.045] p-4 text-sm text-amber-50">
+          <p className="flex items-center gap-2 font-medium"><ShieldCheck className="size-4 text-amber-200" />基于受保护的未提交工作区快照</p>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            已纳入 {job.working_tree_snapshot.changed_files.length} 个文件。原工作区不会被修改；内容或 HEAD 发生变化时，审批、执行和交付都会停止。此类交付需人工审阅，不允许直接自动发布 Draft PR。
+          </p>
         </div>
       )}
 

@@ -28,6 +28,7 @@ from amor.local_runner import run_repository_task
 from amor.orchestrator import PlanningStrategy
 from amor.profiler import RepositoryProfiler
 from amor.providers import ModelProvider, ProviderCredentialStore, build_api_provider
+from amor.workspace import create_working_tree_snapshot, working_tree_matches
 
 
 ProviderName = Literal["openai-responses", "deepseek-responses"]
@@ -90,6 +91,7 @@ class PlanningRequest(BaseModel):
     max_output_tokens: int = Field(default=4_000, ge=1, le=100_000)
     context_budget_chars: int = Field(default=40_000, ge=1_000, le=1_000_000)
     confirm_send_code: Literal[True]
+    confirm_dirty_snapshot: bool = False
 
     @field_validator("repository")
     @classmethod
@@ -269,6 +271,17 @@ class DeliveryState(BaseModel):
     updated_at: datetime
 
 
+class WorkingTreeSnapshot(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source_head_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    tree_hash: str = Field(pattern=r"^[0-9a-f]{40}$")
+    baseline_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    ref: str = Field(min_length=1, max_length=200)
+    changed_files: list[str] = Field(min_length=1, max_length=2_000)
+    created_at: datetime
+
+
 class JobSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -276,6 +289,7 @@ class JobSnapshot(BaseModel):
     status: JobStatus
     phase: str
     planning_request: PlanningRequest
+    working_tree_snapshot: WorkingTreeSnapshot | None = None
     execution_request: ExecutionRequest | None = None
     plan: dict[str, Any] | None = None
     plan_artifact: str | None = None
@@ -406,8 +420,6 @@ class TaskJobManager:
     def start_planning(self, request: PlanningRequest) -> dict[str, Any]:
         repository = Path(request.repository)
         profile = RepositoryProfiler().profile(repository)
-        if profile.dirty_worktree:
-            raise JobConflict("repository must be clean before acceptance planning")
         if "Python" not in profile.languages:
             raise JobConflict("acceptance planning currently supports Python repositories only")
         self.provider_factory(
@@ -416,6 +428,24 @@ class TaskJobManager:
             max_output_tokens=request.max_output_tokens,
         )
 
+        snapshot_state: WorkingTreeSnapshot | None = None
+        if profile.dirty_worktree:
+            if not request.confirm_dirty_snapshot:
+                raise JobConflict(
+                    "repository has uncommitted changes; inspect them and confirm a protected snapshot"
+                )
+            captured = create_working_tree_snapshot(repository)
+            if captured.ref is None:
+                raise JobConflict("repository changed while the working-tree snapshot was being created")
+            snapshot_state = WorkingTreeSnapshot(
+                source_head_commit=captured.source_head_commit,
+                tree_hash=captured.tree_hash,
+                baseline_commit=captured.baseline_commit,
+                ref=captured.ref,
+                changed_files=captured.changed_files,
+                created_at=_utc_now(),
+            )
+
         now = _utc_now()
         job_id = now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
         snapshot = JobSnapshot(
@@ -423,6 +453,7 @@ class TaskJobManager:
             status=JobStatus.QUEUED,
             phase="QUEUED",
             planning_request=request,
+            working_tree_snapshot=snapshot_state,
             created_at=now,
             updated_at=now,
         )
@@ -430,6 +461,16 @@ class TaskJobManager:
         with self._lock:
             self._jobs[job_id] = managed
             self._append_event_locked(managed, "job", "任务已进入验收规划队列")
+            if snapshot_state is not None:
+                self._append_event_locked(
+                    managed,
+                    "working_tree_snapshot",
+                    f"已保护 {len(snapshot_state.changed_files)} 个未提交文件，原工作区保持不变",
+                    payload={
+                        "baseline_commit": snapshot_state.baseline_commit,
+                        "changed_file_count": len(snapshot_state.changed_files),
+                    },
+                )
             managed.future = self._executor.submit(self._run_planning, job_id)
         return self.get_job(job_id)
 
@@ -441,6 +482,7 @@ class TaskJobManager:
             plan = self._load_job_plan(managed.snapshot)
             if plan.contract_sha256 != request.contract_sha256:
                 raise JobConflict("contract changed after it was reviewed; refresh before approval")
+            self._require_unchanged_repository(managed.snapshot, plan)
             self.provider_factory(
                 request.provider,
                 model=request.model,
@@ -713,6 +755,11 @@ class TaskJobManager:
                 should_cancel=managed.cancel_event.is_set,
                 trace_listener=self._trace_listener(job_id),
                 revision_context=revision_context,
+                baseline_commit=(
+                    managed.snapshot.working_tree_snapshot.baseline_commit
+                    if managed.snapshot.working_tree_snapshot is not None
+                    else None
+                ),
             )
             if managed.cancel_event.is_set():
                 self._finish_cancelled(job_id)
@@ -788,6 +835,11 @@ class TaskJobManager:
                 should_cancel=managed.cancel_event.is_set,
                 trace_listener=self._trace_listener(job_id),
                 sandbox=execution.sandbox,
+                baseline_commit=(
+                    managed.snapshot.working_tree_snapshot.baseline_commit
+                    if managed.snapshot.working_tree_snapshot is not None
+                    else None
+                ),
             )
             with self._lock:
                 managed.snapshot.run = _safe_report(report)
@@ -855,6 +907,16 @@ class TaskJobManager:
                 acceptance_plan_path=self._artifact_path(managed.snapshot.plan_artifact or ""),
                 delivery_root=delivery_root,
                 should_cancel=managed.cancel_event.is_set,
+                expected_source_head=(
+                    managed.snapshot.working_tree_snapshot.source_head_commit
+                    if managed.snapshot.working_tree_snapshot is not None
+                    else None
+                ),
+                expected_source_tree=(
+                    managed.snapshot.working_tree_snapshot.tree_hash
+                    if managed.snapshot.working_tree_snapshot is not None
+                    else None
+                ),
             )
             with self._lock:
                 delivery.report = report.model_dump(mode="json", exclude={"workspace_path"})
@@ -1117,7 +1179,21 @@ class TaskJobManager:
         snapshot: JobSnapshot,
         plan: AcceptancePlan,
     ) -> None:
-        profile = RepositoryProfiler().profile(Path(snapshot.planning_request.repository))
+        repository = Path(snapshot.planning_request.repository)
+        protected = snapshot.working_tree_snapshot
+        if protected is not None:
+            if plan.baseline_commit != protected.baseline_commit:
+                raise JobConflict("protected working-tree baseline no longer matches the contract")
+            if not working_tree_matches(
+                repository,
+                source_head_commit=protected.source_head_commit,
+                tree_hash=protected.tree_hash,
+            ):
+                raise JobConflict(
+                    "repository changed after its protected snapshot; restore it or create a new task"
+                )
+            return
+        profile = RepositoryProfiler().profile(repository)
         if profile.dirty_worktree:
             raise JobConflict("repository changed after planning; restore a clean worktree first")
         if profile.head_commit != plan.baseline_commit:

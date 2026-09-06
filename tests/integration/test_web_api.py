@@ -144,3 +144,34 @@ def test_environment_provider_key_cannot_be_revealed_or_cleared_from_ui(
         cleared = client.delete("/api/settings/providers/deepseek-responses")
         assert cleared.json()["source"] == "environment"
         assert secret not in cleared.text
+
+
+def test_repository_inspection_reports_dirty_files_without_file_contents(tmp_path: Path) -> None:
+    from amor.benchmarks import BenchmarkLayout
+    from amor.workspace import WorkspaceManager
+
+    project = Path(__file__).resolve().parents[2]
+    fixture = WorkspaceManager().create_from_fixture(
+        BenchmarkLayout(project / "benchmarks").fixtures / "python_utils",
+        tmp_path / "fixture",
+    )
+    secret_content = "private-value-that-must-not-be-returned"
+    (fixture.source_repository / "private.txt").write_text(secret_content, encoding="utf-8")
+    client = TestClient(create_app(artifacts_root=tmp_path / "artifacts", frontend_root=tmp_path / "missing"))
+
+    rejected = client.post(
+        "/api/repositories/inspect",
+        json={"repository": str(fixture.source_repository)},
+        headers={"Origin": "https://attacker.example"},
+    )
+    assert rejected.status_code == 403
+
+    inspected = client.post(
+        "/api/repositories/inspect",
+        json={"repository": str(fixture.source_repository)},
+        headers={"Origin": "http://127.0.0.1:8765"},
+    )
+    assert inspected.status_code == 200
+    assert inspected.json()["dirty"] is True
+    assert "private.txt" in inspected.json()["changed_files"]
+    assert secret_content not in inspected.text

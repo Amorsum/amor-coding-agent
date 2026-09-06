@@ -48,6 +48,98 @@ def wait_for_delivery_status(client: TestClient, job_id: str, expected: str) -> 
     raise AssertionError(f"delivery did not reach {expected}: {job}")
 
 
+def test_dirty_repository_requires_snapshot_consent_and_detects_later_drift(
+    tmp_path: Path,
+) -> None:
+    fixture = WorkspaceManager().create_from_fixture(
+        BenchmarkLayout(project_root() / "benchmarks").fixtures / "python_utils",
+        tmp_path / "fixture-dirty",
+    )
+    repository = fixture.source_repository
+    (repository / "notes.txt").write_text("draft context\n", encoding="utf-8")
+    artifacts = tmp_path / "artifacts-dirty"
+
+    def planner(**kwargs):
+        return write_acceptance_plan(
+            kwargs["artifacts_root"] / "dirty-plan" / "acceptance-plan.json",
+            {
+                "schema_version": "v1",
+                "plan_id": "dirty-plan",
+                "status": "READY",
+                "baseline_commit": kwargs["baseline_commit"],
+                "instruction": kwargs["instruction"],
+                "acceptance_criteria": ["tests pass"],
+                "preserved_behaviors": [],
+                "edge_cases": [],
+                "allowed_paths": kwargs["allowed_paths"],
+                "validation_commands": kwargs["validation_commands"],
+                "python_cases": [
+                    {
+                        "name": "average remains valid",
+                        "module": "src.calculator",
+                        "callable": "average",
+                        "args_json": "[[2,4]]",
+                        "kwargs_json": "{}",
+                        "expectation": "equals",
+                        "expected_json": "3.0",
+                        "exception_type": "",
+                        "rationale": "baseline behavior",
+                    }
+                ],
+                "evidence_files": ["src/calculator.py"],
+                "questions": [],
+                "summary": "protected snapshot contract",
+                "provider": kwargs["provider_name"],
+                "model": kwargs["model"],
+                "token_usage": {},
+                "created_at": datetime.now(timezone.utc),
+            },
+        )
+
+    manager = TaskJobManager(
+        artifacts,
+        project_root=project_root(),
+        provider_factory=lambda *args, **kwargs: object(),
+        planner=planner,
+        runner=lambda **kwargs: (_ for _ in ()).throw(AssertionError("runner must not start")),
+    )
+    payload = {
+        "repository": str(repository),
+        "instruction": "keep average behavior",
+        "acceptance_criteria": ["tests pass"],
+        "allowed_paths": ["src/**"],
+        "validation_commands": [[sys.executable, "-c", "raise SystemExit(0)"]],
+        "provider": "openai-responses",
+        "model": "planner-model",
+        "confirm_send_code": True,
+    }
+    with TestClient(create_app(artifacts_root=artifacts, frontend_root=tmp_path / "missing", job_manager=manager)) as client:
+        refused = client.post("/api/jobs", json=payload)
+        assert refused.status_code == 409
+
+        created = client.post("/api/jobs", json={**payload, "confirm_dirty_snapshot": True})
+        assert created.status_code == 202
+        planned = wait_for_status(client, created.json()["job_id"], "AWAITING_APPROVAL")
+        protected = planned["working_tree_snapshot"]
+        assert protected["changed_files"] == ["notes.txt"]
+        assert planned["plan"]["baseline_commit"] == protected["baseline_commit"]
+        assert (repository / "notes.txt").read_text(encoding="utf-8") == "draft context\n"
+
+        (repository / "notes.txt").write_text("newer draft\n", encoding="utf-8")
+        approval = client.post(
+            f"/api/jobs/{planned['job_id']}/approve",
+            json={
+                "contract_sha256": planned["plan"]["contract_sha256"],
+                "provider": "openai-responses",
+                "model": "runner-model",
+                "sandbox": {"mode": "host"},
+                "confirm_send_code": True,
+            },
+        )
+        assert approval.status_code == 409
+        assert "protected snapshot" in approval.json()["detail"]
+
+
 def test_local_web_job_plans_waits_for_approval_and_runs(tmp_path: Path) -> None:
     fixture = WorkspaceManager().create_from_fixture(
         BenchmarkLayout(project_root() / "benchmarks").fixtures / "python_utils",

@@ -99,7 +99,14 @@ class WorkspaceManager:
         _run_git(["worktree", "add", "--detach", str(workspace_root), baseline], source_repository)
         return IsolatedWorkspace(source_repository, workspace_root, baseline)
 
-    def create_from_repository(self, repository: Path, run_dir: Path) -> IsolatedWorkspace:
+    def create_from_repository(
+        self,
+        repository: Path,
+        run_dir: Path,
+        *,
+        baseline_commit: str | None = None,
+        require_clean: bool = True,
+    ) -> IsolatedWorkspace:
         repository = repository.resolve()
         run_dir = run_dir.resolve()
         if not repository.is_dir():
@@ -109,12 +116,13 @@ class WorkspaceManager:
         if top_level != repository:
             raise WorkspaceError(f"select the Git repository root instead: {top_level}")
         status = _run_git(["status", "--short"], repository)
-        if status:
+        if status and require_clean:
             raise WorkspaceError(
                 "repository has uncommitted or untracked changes; commit/stash them before creating an isolated run"
             )
 
-        baseline = _run_git(["rev-parse", "HEAD"], repository)
+        baseline = baseline_commit or _run_git(["rev-parse", "HEAD"], repository)
+        _run_git(["cat-file", "-e", f"{baseline}^{{commit}}"], repository)
         workspace_root = run_dir / "workspace"
         if workspace_root.exists():
             raise WorkspaceError(f"run workspace already exists: {workspace_root}")

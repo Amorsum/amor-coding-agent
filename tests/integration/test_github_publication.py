@@ -181,6 +181,23 @@ def test_github_publication_rejects_dirty_delivery_workspace(tmp_path: Path) -> 
         )
 
 
+def test_github_publication_requires_manual_review_for_source_snapshot(tmp_path: Path) -> None:
+    report_path, token = delivery_fixture(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["source_snapshot"] = True
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(GitHubPublicationError, match="manual review"):
+        publish_verified_delivery(
+            delivery_report_path=report_path,
+            remote_name="origin",
+            base_branch="main",
+            title="fix: verified change",
+            token=token,
+            confirm_publish=True,
+        )
+
+
 def test_push_uses_non_overwriting_lease_and_environment_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

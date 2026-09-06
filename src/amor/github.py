@@ -82,6 +82,10 @@ def publish_verified_delivery(
         raise GitHubPublicationError("only a successfully reverified delivery can be published")
     if not delivery.commit_requested or not delivery.commit_sha:
         raise GitHubPublicationError("delivery must contain a local commit before publication")
+    if delivery.source_snapshot:
+        raise GitHubPublicationError(
+            "deliveries based on uncommitted working-tree snapshots require manual review before publication"
+        )
 
     workspace = Path(delivery.workspace_path).resolve()
     if not workspace.is_dir():

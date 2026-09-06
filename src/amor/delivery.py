@@ -14,7 +14,7 @@ from amor.benchmarks import BenchmarkLayout
 from amor.domain import TaskSpec, VerificationResult
 from amor.profiler import RepositoryProfiler
 from amor.verifier import IndependentVerifier
-from amor.workspace import IsolatedWorkspace
+from amor.workspace import IsolatedWorkspace, working_tree_matches
 
 
 class DeliveryError(RuntimeError):
@@ -31,6 +31,7 @@ class DeliveryReport(BaseModel):
     patch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     commit_requested: bool
     commit_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    source_snapshot: bool = False
     verification: VerificationResult | None = None
     workspace_path: str
     error: str | None = None
@@ -56,6 +57,8 @@ def deliver_verified_patch(
     acceptance_plan_path: Path | None,
     delivery_root: Path,
     should_cancel: Callable[[], bool] | None = None,
+    expected_source_head: str | None = None,
+    expected_source_tree: str | None = None,
 ) -> DeliveryReport:
     """Apply one verified patch to a new local branch in a separate worktree."""
 
@@ -70,11 +73,22 @@ def deliver_verified_patch(
     if actual_patch_sha256 != expected_patch_sha256:
         raise DeliveryError("verified patch hash mismatch")
 
-    profile = RepositoryProfiler().profile(repository)
-    if profile.dirty_worktree:
-        raise DeliveryError("repository must remain clean before delivery")
-    if profile.head_commit != baseline_commit:
-        raise DeliveryError("repository HEAD changed after verification")
+    source_snapshot = expected_source_head is not None or expected_source_tree is not None
+    if source_snapshot:
+        if not expected_source_head or not expected_source_tree:
+            raise DeliveryError("protected source snapshot metadata is incomplete")
+        if not working_tree_matches(
+            repository,
+            source_head_commit=expected_source_head,
+            tree_hash=expected_source_tree,
+        ):
+            raise DeliveryError("repository changed after the protected snapshot")
+    else:
+        profile = RepositoryProfiler().profile(repository)
+        if profile.dirty_worktree:
+            raise DeliveryError("repository must remain clean before delivery")
+        if profile.head_commit != baseline_commit:
+            raise DeliveryError("repository HEAD changed after verification")
     _validate_branch_name(repository, branch_name)
     if _branch_exists(repository, branch_name):
         raise DeliveryError(f"delivery branch already exists: {branch_name}")
@@ -97,6 +111,7 @@ def deliver_verified_patch(
                 baseline_commit=baseline_commit,
                 patch_sha256=actual_patch_sha256,
                 commit_requested=commit_requested,
+                source_snapshot=source_snapshot,
                 workspace_path=str(workspace_root),
                 created_at=created_at,
                 finished_at=_utc_now(),
@@ -117,6 +132,7 @@ def deliver_verified_patch(
             commit_requested,
             workspace_root,
             created_at,
+            source_snapshot=source_snapshot,
         )
 
     _git(
@@ -138,6 +154,7 @@ def deliver_verified_patch(
             commit_requested,
             workspace_root,
             created_at,
+            source_snapshot=source_snapshot,
         )
 
     verifier = IndependentVerifier(BenchmarkLayout(project_root.resolve() / "benchmarks"))
@@ -159,6 +176,7 @@ def deliver_verified_patch(
             workspace_root,
             created_at,
             verification=verification,
+            source_snapshot=source_snapshot,
         )
     if not verification.passed:
         return _write_report(
@@ -170,6 +188,7 @@ def deliver_verified_patch(
                 baseline_commit=baseline_commit,
                 patch_sha256=actual_patch_sha256,
                 commit_requested=commit_requested,
+                source_snapshot=source_snapshot,
                 verification=verification,
                 workspace_path=str(workspace_root),
                 error="verification failed after applying the patch",
@@ -194,6 +213,7 @@ def deliver_verified_patch(
             patch_sha256=actual_patch_sha256,
             commit_requested=commit_requested,
             commit_sha=commit_sha,
+            source_snapshot=source_snapshot,
             verification=verification,
             workspace_path=str(workspace_root),
             created_at=created_at,
@@ -213,6 +233,7 @@ def _cancelled_report(
     created_at: datetime,
     *,
     verification: VerificationResult | None = None,
+    source_snapshot: bool = False,
 ) -> DeliveryReport:
     return _write_report(
         delivery_root,
@@ -223,6 +244,7 @@ def _cancelled_report(
             baseline_commit=baseline_commit,
             patch_sha256=patch_sha256,
             commit_requested=commit_requested,
+            source_snapshot=source_snapshot,
             verification=verification,
             workspace_path=str(workspace_root),
             created_at=created_at,
