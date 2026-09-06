@@ -1254,7 +1254,7 @@ function DeliveryPanel({
               ))}
             </div>
           </div>
-          <p className="text-xs leading-relaxed text-muted-foreground">原仓库当前分支和工作副本没有被切换或修改；本版不会自动推送远端。</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">原仓库当前分支和工作副本没有被切换或修改；如需远端协作，可在终端对这份交付报告显式执行 <code>amor publish-pr</code>，系统只会创建新的 Draft PR。</p>
         </CardContent>
       </Card>
     );

@@ -123,3 +123,20 @@ def test_stage_showcase_defaults_to_a_supported_static_directory() -> None:
     assert arguments.artifacts == Path("artifacts")
     assert arguments.output == Path("out")
     assert arguments.confirm_public is False
+
+
+def test_publish_pr_defaults_to_draft_main_branch() -> None:
+    arguments = build_parser().parse_args(
+        [
+            "publish-pr",
+            "--delivery",
+            "artifacts/delivery-report.json",
+            "--title",
+            "fix: verified change",
+        ]
+    )
+
+    assert arguments.remote == "origin"
+    assert arguments.base == "main"
+    assert arguments.proxy is None
+    assert arguments.confirm_publish is False

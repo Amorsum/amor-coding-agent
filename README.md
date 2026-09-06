@@ -2,7 +2,7 @@
 
 AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动的本地 Coding Agent。当前版本支持固定 Benchmark 演示，以及对干净的本地 Git 仓库运行自然语言修复任务。
 
-`v0.15.0` 增加受控公网发布链路：先验证公开快照的清单与内容哈希，再把固定的三个公开文件暂存到独立静态目录；目录混入任何未知文件都会拒绝发布。公网托管只包含静态实验证据，不上传本地工作台、任务 API、源代码、Artifact 原始数据或 Provider 凭据。
+`v0.16.0` 增加受审批的 GitHub Draft PR 发布链路：只允许把已在独立 worktree 中再次通过 Verifier 且生成本地 commit 的交付结果推送到 `github.com`。发布前重新检查工作区、分支、commit 与补丁 SHA-256，远端分支必须原先不存在；Token 只从环境读取，PR 证据不包含凭据或 Verifier 原始输出。
 
 ## 当前可运行链路
 
@@ -73,6 +73,7 @@ $env:OPENAI_API_KEY = "your-api-key"
 - 对 Git Diff 生成 SHA-256 指纹，并完整包含受范围约束的新文件
 - 将已验收补丁应用到新的本地分支，在交付 worktree 中重新验收并可选 commit
 - 交付前检查仓库基准、工作区、契约哈希和补丁哈希；任一漂移都会拒绝操作
+- 对已提交且再次验收通过的交付结果，通过独立 CLI 审批创建 GitHub Draft PR
 - 刷新页面后从 `artifacts/jobs/` 恢复任务记录；服务重启时未完成任务会明确标记为中断
 
 “实验分析”页签继续提供：
@@ -120,6 +121,24 @@ $env:OPENAI_API_KEY = "your-api-key"
 ```
 
 仓库根目录的 `.openai/hosting.json` 只将 `out/` 声明为静态发布内容。当前公开地址计划绑定为 `https://amor.amorsum.top`；更新线上报告时，需要重新导出、暂存并发布一个新版本，旧内容不会在没有确认的情况下自动变化。
+
+## 发布已验收交付到 GitHub Draft PR
+
+只有选择“生成本地 Commit”并且落地后二次验收通过的交付结果才能发布。使用 Fine-grained PAT 时，目标仓库需要 `Contents: write` 和 `Pull requests: write`；Token 只放在当前终端，不要写入命令参数或项目文件：
+
+```powershell
+$env:GH_TOKEN = "your-fine-grained-token"
+
+.venv\Scripts\amor publish-pr `
+  --delivery "artifacts\jobs\<job-id>\deliveries\attempt-0001\delivery-report.json" `
+  --remote origin `
+  --base main `
+  --title "fix: apply verified AMOR patch" `
+  --proxy "http://127.0.0.1:7890" `
+  --confirm-publish
+```
+
+`--proxy` 可省略；它只接受不带账号密码的 HTTP(S) 代理 URL。发布固定创建 Draft PR，不会自动请求评审、合并或删除分支。系统只把检查名称与哈希证据写入 PR 描述，不上传测试输出、任务指令、代码片段或本地路径。每次结果独立保存在交付目录的 `github-publications/<publication-id>.json`；若分支推送成功但 PR 创建失败，报告会保留这一事实，方便人工恢复。
 
 ## 运行 Benchmark
 
@@ -342,6 +361,7 @@ Web 任务还会写入：
 - Benchmark 隐藏测试位于目标工作区之外，由独立 Verifier 执行；真实项目只运行用户批准的验证命令。
 - 公开快照使用字段白名单重新构造，不复制原始报告；输出 CSP 禁止脚本、表单和外部资源，并用清单哈希检测改写。
 - 公网暂存只接受 `index.html`、`showcase.json` 和 `manifest.json`，并在复制后再次校验哈希；任何额外文件都会关闭发布流程。
+- GitHub 发布只允许二次验收通过的交付 commit，使用“预期远端分支不存在”的 lease 推送，禁止覆盖已有远端分支；Token 只进入子进程环境和 HTTPS 请求头。
 
 真实任务默认在每任务 Docker 容器中执行目标项目命令，容器禁网且不挂载 API Key、用户主目录或 Docker socket。文件检索与补丁仍由宿主 AMOR 进程在隔离 worktree 内完成，并受路径策略约束。宿主机兼容模式只适合受信任仓库。即使使用容器，当前本地路径选择、Provider 凭据和服务访问模型也不满足多租户公网要求。
 
@@ -351,6 +371,7 @@ Web 任务还会写入：
 src/amor/               核心实现
 src/amor/execution/     宿主机与 Docker 命令执行边界
 src/amor/showcase.py    静态脱敏快照生成与完整性清单
+src/amor/github.py      GitHub 分支推送与 Draft PR 证据边界
 src/amor/web/           本地任务 API、Artifact API 与静态工作台托管
 benchmarks/fixtures/    示例目标仓库模板
 benchmarks/tasks/       Agent 可见任务规格
@@ -362,6 +383,6 @@ out/                    经确认并验证的公网静态页面
 .openai/hosting.json    公网托管的静态目录边界
 ```
 
-模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)，第十二迭代的补丁交付边界见 [ADR 0012](./docs/adr/0012-verified-patch-delivery.md)，第十三迭代的容器命令沙箱见 [ADR 0013](./docs/adr/0013-per-task-container-sandbox.md)，第十四迭代的公开快照边界见 [ADR 0014](./docs/adr/0014-static-redacted-showcase.md)，第十五迭代的静态公网发布边界见 [ADR 0015](./docs/adr/0015-static-public-deployment.md)。
+模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)，第十二迭代的补丁交付边界见 [ADR 0012](./docs/adr/0012-verified-patch-delivery.md)，第十三迭代的容器命令沙箱见 [ADR 0013](./docs/adr/0013-per-task-container-sandbox.md)，第十四迭代的公开快照边界见 [ADR 0014](./docs/adr/0014-static-redacted-showcase.md)，第十五迭代的静态公网发布边界见 [ADR 0015](./docs/adr/0015-static-public-deployment.md)，第十六迭代的 GitHub Draft PR 边界见 [ADR 0016](./docs/adr/0016-verified-github-draft-pr.md)。
 
 完整产品规划见 [AMOR-Coding-Agent项目实现方案.md](./AMOR-Coding-Agent项目实现方案.md)。

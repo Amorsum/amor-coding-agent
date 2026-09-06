@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from amor.acceptance import (
@@ -13,6 +14,7 @@ from amor.domain import RunLimits, SandboxConfig, SandboxMode
 from amor.benchmarks.experiment import run_planning_experiment, run_strategy_experiment
 from amor.benchmarks.runner import SUPPORTED_PROVIDERS, run_benchmark
 from amor.context import SUPPORTED_CONTEXT_STRATEGIES, ContextStrategy
+from amor.github import GitHubPublicationError, publish_verified_delivery
 from amor.local_runner import run_repository_task
 from amor.orchestrator import SUPPORTED_PLANNING_STRATEGIES, PlanningStrategy
 from amor.profiler import RepositoryProfiler
@@ -200,6 +202,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm-public",
         action="store_true",
         help="confirm that the verified snapshot may be copied into a deployment directory",
+    )
+
+    pull_request = subparsers.add_parser(
+        "publish-pr",
+        help="push a reverified delivery commit and create a GitHub Draft PR",
+    )
+    pull_request.add_argument("--delivery", type=Path, required=True)
+    pull_request.add_argument("--remote", default="origin")
+    pull_request.add_argument("--base", default="main")
+    pull_request.add_argument("--title", required=True)
+    pull_request.add_argument("--proxy", help="optional credential-free HTTP(S) proxy URL")
+    pull_request.add_argument(
+        "--confirm-publish",
+        action="store_true",
+        help="confirm the branch push and Draft PR creation",
     )
     return parser
 
@@ -540,6 +557,33 @@ def main() -> int:
         print(f"showcase {manifest.showcase_id}: STAGED")
         print(f"  directory: {output}")
         return 0
+    if arguments.command == "publish-pr":
+        if not arguments.confirm_publish:
+            raise SystemExit("refusing GitHub publication without --confirm-publish")
+        token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+        try:
+            report = publish_verified_delivery(
+                delivery_report_path=arguments.delivery,
+                remote_name=arguments.remote,
+                base_branch=arguments.base,
+                title=arguments.title,
+                token=token,
+                confirm_publish=True,
+                proxy=arguments.proxy,
+            )
+        except (GitHubPublicationError, OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"github publication {report.publication_id}: {report.status}")
+        print(f"  branch: {report.repository}:{report.branch_name}")
+        print(
+            "  report: "
+            f"{arguments.delivery.resolve().parent / 'github-publications' / (report.publication_id + '.json')}"
+        )
+        if report.pull_request_url:
+            print(f"  pull request: {report.pull_request_url}")
+        if report.error:
+            print(f"  error: {report.error}")
+        return 0 if report.status == "SUCCEEDED" else 1
     return 2
 
 

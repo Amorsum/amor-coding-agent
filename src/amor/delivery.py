@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from amor.benchmarks import BenchmarkLayout
 from amor.domain import TaskSpec, VerificationResult
@@ -26,11 +26,11 @@ class DeliveryReport(BaseModel):
 
     delivery_id: str
     status: Literal["SUCCEEDED", "FAILED", "CANCELLED"]
-    branch_name: str
-    baseline_commit: str
-    patch_sha256: str
+    branch_name: str = Field(min_length=1, max_length=200)
+    baseline_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    patch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     commit_requested: bool
-    commit_sha: str | None = None
+    commit_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     verification: VerificationResult | None = None
     workspace_path: str
     error: str | None = None
