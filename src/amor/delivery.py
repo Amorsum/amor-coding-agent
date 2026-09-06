@@ -12,6 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from amor.benchmarks import BenchmarkLayout
 from amor.domain import TaskSpec, VerificationResult
+from amor.execution import (
+    DockerCommandExecutor,
+    build_command_executor,
+    dependency_bootstrap_enabled,
+    prepare_python_dependencies,
+)
 from amor.profiler import RepositoryProfiler
 from amor.verifier import IndependentVerifier
 from amor.workspace import IsolatedWorkspace, working_tree_matches
@@ -157,7 +163,21 @@ def deliver_verified_patch(
             source_snapshot=source_snapshot,
         )
 
-    verifier = IndependentVerifier(BenchmarkLayout(project_root.resolve() / "benchmarks"))
+    dependency_root = delivery_root / "dependencies" if dependency_bootstrap_enabled(task.sandbox) else None
+    command_executor = build_command_executor(workspace.root, task.sandbox, dependency_root)
+    if dependency_bootstrap_enabled(task.sandbox):
+        if not isinstance(command_executor, DockerCommandExecutor):
+            raise DeliveryError("automatic dependency bootstrap requires Docker")
+        prepare_python_dependencies(
+            command_executor,
+            workspace.root,
+            task.visible_validation_commands,
+            should_cancel=should_cancel,
+        )
+    verifier = IndependentVerifier(
+        BenchmarkLayout(project_root.resolve() / "benchmarks"),
+        command_executor=command_executor,
+    )
     verification = verifier.verify(
         task,
         workspace,

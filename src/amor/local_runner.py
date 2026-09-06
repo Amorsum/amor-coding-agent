@@ -21,7 +21,12 @@ from amor.domain import (
     VerificationResult,
 )
 from amor.orchestrator import ModelDrivenOrchestrator, PlanningStrategy
-from amor.execution import build_command_executor
+from amor.execution import (
+    DockerCommandExecutor,
+    build_command_executor,
+    dependency_bootstrap_enabled,
+    prepare_python_dependencies,
+)
 from amor.policy import PolicyEngine
 from amor.profiler import RepositoryProfiler
 from amor.providers import ModelProvider
@@ -148,7 +153,26 @@ def run_repository_task(
     )
 
     policy = PolicyEngine(workspace.root, allowed_paths, validation_commands)
-    command_executor = build_command_executor(workspace.root, task.sandbox)
+    dependency_root = run_dir / "dependencies" if dependency_bootstrap_enabled(task.sandbox) else None
+    command_executor = build_command_executor(workspace.root, task.sandbox, dependency_root)
+    if dependency_bootstrap_enabled(task.sandbox):
+        if not isinstance(command_executor, DockerCommandExecutor):
+            raise RuntimeError("automatic dependency bootstrap requires Docker")
+        trace.record(
+            "dependency_bootstrap_started",
+            AgentPhase.INITIALIZING,
+            {
+                "network_scope": "dependency-bootstrap-only",
+                "validation_network": "disabled",
+            },
+        )
+        dependency_report = prepare_python_dependencies(
+            command_executor,
+            workspace.root,
+            validation_commands,
+            should_cancel=should_cancel,
+        )
+        trace.record("dependency_bootstrap_finished", AgentPhase.INITIALIZING, dependency_report)
     tools = ToolRegistry(
         workspace,
         policy,

@@ -1,6 +1,7 @@
 from amor.domain.models import (
     AgentPhase,
     AgentState,
+    DependencyBootstrapMode,
     PlanStep,
     RunLimits,
     RunReport,
@@ -19,6 +20,7 @@ from amor.domain.models import (
 __all__ = [
     "AgentPhase",
     "AgentState",
+    "DependencyBootstrapMode",
     "PlanStep",
     "RunLimits",
     "RunReport",

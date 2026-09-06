@@ -1,10 +1,15 @@
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 
 import pytest
 
-from amor.domain import SandboxConfig, SandboxMode
-from amor.execution import DockerCommandExecutor, docker_runtime_status
+from amor.domain import DependencyBootstrapMode, SandboxConfig, SandboxMode
+from amor.execution import (
+    DockerCommandExecutor,
+    docker_runtime_status,
+    prepare_python_dependencies,
+)
 from amor.benchmarks import BenchmarkLayout, load_task
 from amor.acceptance import write_acceptance_plan
 from amor.verifier import IndependentVerifier
@@ -12,6 +17,48 @@ from amor.workspace import WorkspaceManager
 
 
 _DOCKER = docker_runtime_status()
+
+
+@pytest.mark.skipif(
+    os.environ.get("AMOR_RUN_NETWORK_TESTS") != "1"
+    or not (_DOCKER["engine_available"] and _DOCKER["image_available"]),
+    reason="requires AMOR_RUN_NETWORK_TESTS=1, Docker, and PyPI access",
+)
+def test_real_dependency_bootstrap_feeds_networkless_validation(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "tests").mkdir()
+    (workspace / "src" / "value.py").write_text("VALUE = 7\n", encoding="utf-8")
+    (workspace / "tests" / "test_value.py").write_text(
+        "from value import VALUE\n\ndef test_value():\n    assert VALUE == 7\n",
+        encoding="utf-8",
+    )
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname="bootstrap-test"\nversion="0.1.0"\n\n'
+        '[tool.pytest.ini_options]\npythonpath=["src"]\n',
+        encoding="utf-8",
+    )
+    config = SandboxConfig(
+        mode=SandboxMode.DOCKER,
+        dependency_bootstrap=DependencyBootstrapMode.AUTO,
+    )
+    executor = DockerCommandExecutor(workspace, config, tmp_path / "dependencies")
+
+    report = prepare_python_dependencies(
+        executor,
+        workspace,
+        [["python", "-m", "pytest", "-q"]],
+    )
+    result = executor.run(
+        ["python", "-m", "pytest", "-q"],
+        cwd=workspace,
+        timeout_seconds=30,
+        max_output_chars=2_000,
+    )
+
+    assert report["installed"] is True
+    assert result.ok, result.output
+    assert "1 passed" in result.output
 
 
 @pytest.mark.skipif(

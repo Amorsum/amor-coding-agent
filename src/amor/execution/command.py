@@ -82,9 +82,15 @@ class HostCommandExecutor:
 class DockerCommandExecutor:
     mode = SandboxMode.DOCKER
 
-    def __init__(self, workspace_root: Path, config: SandboxConfig) -> None:
+    def __init__(
+        self,
+        workspace_root: Path,
+        config: SandboxConfig,
+        dependency_root: Path | None = None,
+    ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.config = config
+        self.dependency_root = dependency_root.resolve() if dependency_root is not None else None
         status = docker_runtime_status(config.image)
         if not status["engine_available"]:
             raise ExecutionError(f"Docker engine is unavailable: {status['reason']}")
@@ -139,6 +145,20 @@ class DockerCommandExecutor:
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
         ]
+        if self.dependency_root is not None:
+            self.dependency_root.mkdir(parents=True, exist_ok=True)
+            docker_command.extend(
+                [
+                    "--mount",
+                    _bind_mount(self.dependency_root, "/amor/deps", read_only=True),
+                    "--env",
+                    "PYTHONPATH=/amor/deps/python:/workspace/src:/workspace",
+                    "--env",
+                    "PYTHONNOUSERSITE=1",
+                    "--env",
+                    "PIP_NO_INDEX=1",
+                ]
+            )
         for source, target in mounts:
             docker_command.extend(["--mount", _bind_mount(source, target, read_only=True)])
         docker_command.extend([self.config.image, *translated])
@@ -158,6 +178,91 @@ class DockerCommandExecutor:
                 self.workspace_root,
                 starting_size,
                 self.config.workspace_growth_mb,
+            ),
+        )
+
+    def prepare_python_packages(
+        self,
+        packages: Sequence[str],
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> CommandOutcome:
+        if self.dependency_root is None:
+            raise ExecutionError("dependency storage was not configured")
+        if not packages:
+            return CommandOutcome(
+                returncode=0,
+                output="no dependencies required",
+                duration_ms=0,
+                executor="docker",
+            )
+
+        self.dependency_root.mkdir(parents=True, exist_ok=True)
+        python_root = self.dependency_root / "python"
+        python_root.mkdir(parents=True, exist_ok=True)
+        container_name = f"amor-deps-{uuid.uuid4().hex[:12]}"
+        docker_command = [
+            "docker",
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "--name",
+            container_name,
+            "--network",
+            "bridge",
+            "--cpus",
+            str(self.config.cpus),
+            "--memory",
+            f"{self.config.memory_mb}m",
+            "--memory-swap",
+            f"{self.config.memory_mb}m",
+            "--pids-limit",
+            str(self.config.pids_limit),
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--tmpfs",
+            f"/tmp:rw,noexec,nosuid,size={self.config.tmpfs_mb}m",
+            "--mount",
+            _bind_mount(self.dependency_root, "/amor/deps", read_only=False),
+            "--workdir",
+            "/tmp",
+            "--env",
+            "PIP_INDEX_URL=https://pypi.org/simple",
+            "--env",
+            "PIP_DISABLE_PIP_VERSION_CHECK=1",
+            "--env",
+            "PIP_NO_INPUT=1",
+            "--env",
+            "PYTHONNOUSERSITE=1",
+            self.config.image,
+            "python",
+            "-m",
+            "pip",
+            "install",
+            "--only-binary=:all:",
+            "--target",
+            "/amor/deps/python",
+            *packages,
+        ]
+        starting_size = _directory_size(self.dependency_root)
+        return _run_process(
+            docker_command,
+            cwd=self.dependency_root,
+            environment=_docker_control_environment(),
+            timeout_seconds=self.config.dependency_timeout_seconds,
+            max_output_chars=20_000,
+            should_cancel=should_cancel,
+            executor="docker-dependency-bootstrap",
+            container_name=container_name,
+            on_stop=lambda: _kill_container(container_name),
+            resource_check=lambda: _workspace_growth_error(
+                self.dependency_root,
+                starting_size,
+                self.config.dependency_cache_mb,
             ),
         )
 
@@ -225,9 +330,10 @@ class DockerCommandExecutor:
 def build_command_executor(
     workspace_root: Path,
     config: SandboxConfig,
+    dependency_root: Path | None = None,
 ) -> CommandExecutor:
     if config.mode == SandboxMode.DOCKER:
-        return DockerCommandExecutor(workspace_root, config)
+        return DockerCommandExecutor(workspace_root, config, dependency_root)
     return HostCommandExecutor()
 
 

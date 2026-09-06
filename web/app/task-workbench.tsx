@@ -106,6 +106,9 @@ type RunResult = {
       tmpfs_mb: number;
       workspace_growth_mb: number;
       network_disabled: boolean;
+      dependency_bootstrap: 'disabled' | 'auto';
+      dependency_timeout_seconds: number;
+      dependency_cache_mb: number;
     };
   };
   git_diff: string;
@@ -613,7 +616,7 @@ function TaskCreationForm({
                 </div>
               </div>
               {!inspection.languages.includes('Python') && (
-                <p className="mt-3 text-xs text-rose-200">v0.19 的真实任务暂只支持包含已跟踪 Python 文件的仓库。</p>
+                <p className="mt-3 text-xs text-rose-200">v0.20 的真实任务暂只支持包含已跟踪 Python 文件的仓库。</p>
               )}
               {inspection.dirty && (
                 <>
@@ -932,12 +935,17 @@ function JobDetail({
         </div>
       )}
 
-      {job.status === 'AWAITING_APPROVAL' && job.plan ? (
+      {(job.status === 'AWAITING_APPROVAL' || job.status === 'ENVIRONMENT_BLOCKED') && job.plan ? (
         <ContractReview key={job.plan.contract_sha256} job={job} plan={job.plan} runtime={runtime} onUpdated={onUpdated} onError={onError} onRuntimeUpdated={onRuntimeUpdated} />
       ) : job.status === 'NEEDS_INPUT' && job.plan ? (
         <NeedsInput key={job.plan.contract_sha256} job={job} plan={job.plan} runtime={runtime} onUpdated={onUpdated} onError={onError} onRuntimeUpdated={onRuntimeUpdated} />
       ) : job.run ? (
         <RunEvidence job={job} run={job.run} onUpdated={onUpdated} onError={onError} />
+      ) : job.status === 'ENVIRONMENT_BLOCKED' || job.status === 'FAILED' ? (
+        <Card className="border-amber-300/20 bg-card/75">
+          <CardHeader><CardTitle className="flex items-center gap-2"><CircleAlert className="size-4 text-amber-200" />{job.status === 'ENVIRONMENT_BLOCKED' ? '环境准备未完成' : '任务执行失败'}</CardTitle></CardHeader>
+          <CardContent><p className="text-sm text-muted-foreground">{job.error ?? '请查看实时轨迹中的错误信息。'}</p></CardContent>
+        </Card>
       ) : (
         <LiveProgress job={job} />
       )}
@@ -966,6 +974,8 @@ function ContractReview({
   const [maxSeconds, setMaxSeconds] = useState('900');
   const [retries, setRetries] = useState('2');
   const [sandboxMode, setSandboxMode] = useState<'docker' | 'host'>('docker');
+  const [prepareDependencies, setPrepareDependencies] = useState(true);
+  const [dependencyConfirmed, setDependencyConfirmed] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -995,8 +1005,12 @@ function ContractReview({
             tmpfs_mb: 64,
             workspace_growth_mb: 256,
             network_disabled: true,
+            dependency_bootstrap: sandboxMode === 'docker' && prepareDependencies ? 'auto' : 'disabled',
+            dependency_timeout_seconds: 300,
+            dependency_cache_mb: 512,
           },
           confirm_send_code: confirmed,
+          confirm_dependency_install: sandboxMode === 'docker' && prepareDependencies ? dependencyConfirmed : false,
         }),
       });
       onUpdated(updated);
@@ -1081,7 +1095,7 @@ function ContractReview({
             <div className={dockerReady ? 'sandbox-note ready' : 'sandbox-note unavailable'}>
               <Container className="size-4 shrink-0" />
               <p>{dockerReady
-                ? `无网络 · 1 CPU · 512 MB · 128 进程 · 最大增长 256 MB · ${runtime?.docker.image}`
+                ? `Agent 与验证阶段无网络 · 1 CPU · 512 MB · 128 进程 · ${runtime?.docker.image}`
                 : `Docker 暂不可用：${runtime?.docker.reason ?? '请启动 Docker Desktop 并准备基础镜像'}`}</p>
             </div>
           ) : (
@@ -1090,13 +1104,32 @@ function ContractReview({
               <p>兼容模式会在隔离 worktree 内直接运行命令，但不提供容器级网络和资源隔离。</p>
             </div>
           )}
+          {sandboxMode === 'docker' && (
+            <label className="consent-row text-xs">
+              <input
+                type="checkbox"
+                checked={prepareDependencies}
+                onChange={(event) => {
+                  setPrepareDependencies(event.target.checked);
+                  setDependencyConfirmed(false);
+                }}
+              />
+              <span><strong className="text-foreground">自动准备 Python 依赖</strong><br />仅在准备阶段访问 PyPI，安装完成后 Agent 和 Verifier 恢复无网络。</span>
+            </label>
+          )}
+          {sandboxMode === 'docker' && prepareDependencies && (
+            <label className="consent-row text-xs">
+              <input type="checkbox" checked={dependencyConfirmed} onChange={(event) => setDependencyConfirmed(event.target.checked)} />
+              <span>我同意 AMOR 根据仓库声明和验证命令下载二进制 Python 包；依赖只写入本次任务目录。</span>
+            </label>
+          )}
           <label className="consent-row text-xs">
             <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
             <span>我已逐项审阅并批准此验收契约。</span>
           </label>
           <Button
             className="w-full bg-cyan-300 text-slate-950 hover:bg-cyan-200"
-            disabled={!confirmed || !model.trim() || !providerConfigured || !sandboxReady || submitting}
+            disabled={!confirmed || !model.trim() || !providerConfigured || !sandboxReady || (sandboxMode === 'docker' && prepareDependencies && !dependencyConfirmed) || submitting}
             onClick={() => void approve()}
           >
             {submitting ? <LoaderCircle className="animate-spin" /> : <Play />}
@@ -1436,7 +1469,8 @@ function RunEvidence({
               <Card className="metric-card">
                 <CardContent>
                   <p className="text-xs text-muted-foreground">执行边界</p>
-                  <p className="mt-2 flex items-center gap-2 text-sm"><Container className="size-4 text-cyan-300" />{run.task?.sandbox?.mode === 'docker' ? 'Docker 无网络沙箱' : '宿主机兼容模式'}</p>
+                  <p className="mt-2 flex items-center gap-2 text-sm"><Container className="size-4 text-cyan-300" />{run.task?.sandbox?.mode === 'docker' ? 'Docker 分阶段网络沙箱' : '宿主机兼容模式'}</p>
+                  {run.task?.sandbox?.mode === 'docker' && run.task.sandbox.dependency_bootstrap === 'auto' && <p className="mt-2 text-xs text-emerald-300">依赖准备阶段可访问 PyPI；Agent 与 Verifier 无网络</p>}
                   {run.task?.sandbox?.mode === 'docker' && <p className="mt-2 font-mono text-xs text-muted-foreground">{run.task.sandbox.cpus} CPU · {run.task.sandbox.memory_mb} MB · {run.task.sandbox.pids_limit} PIDs · +{run.task.sandbox.workspace_growth_mb} MB</p>}
                 </CardContent>
               </Card>
@@ -1638,7 +1672,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 function JobStatusBadge({ status }: { status: string }) {
   const successful = status === 'SUCCEEDED';
-  const warning = ['AWAITING_APPROVAL', 'NEEDS_INPUT', 'BLOCKED', 'DELIVERY_FAILED', 'CANCEL_REQUESTED'].includes(status);
+  const warning = ['AWAITING_APPROVAL', 'NEEDS_INPUT', 'BLOCKED', 'ENVIRONMENT_BLOCKED', 'DELIVERY_FAILED', 'CANCEL_REQUESTED'].includes(status);
   const active = activeStatuses.has(status) && status !== 'CANCEL_REQUESTED';
   return (
     <Badge variant="outline" className={successful ? 'border-emerald-400/35 bg-emerald-400/10 text-emerald-300' : warning ? 'border-amber-300/35 bg-amber-300/10 text-amber-200' : active ? 'border-cyan-300/35 bg-cyan-300/10 text-cyan-200' : 'border-rose-400/35 bg-rose-400/10 text-rose-300'}>
@@ -1704,7 +1738,7 @@ function jobStatusLabel(status: string): string {
     QUEUED: '等待规划', PLANNING: '规划中', REPLANNING: '修订中', AWAITING_APPROVAL: '等待审批', NEEDS_INPUT: '需要信息',
     EXECUTION_QUEUED: '等待执行', RUNNING: '执行中', SUCCEEDED: '验收通过', FAILED: '执行失败',
     DELIVERY_QUEUED: '等待交付', DELIVERING: '交付验收中', DELIVERY_FAILED: '交付失败',
-    BLOCKED: '安全阻断', BUDGET_EXHAUSTED: '预算耗尽', CANCEL_REQUESTED: '正在取消', CANCELLED: '已取消',
+    BLOCKED: 'Agent 阻断', ENVIRONMENT_BLOCKED: '环境准备失败', BUDGET_EXHAUSTED: '预算耗尽', CANCEL_REQUESTED: '正在取消', CANCELLED: '已取消',
   }[status] ?? status;
 }
 

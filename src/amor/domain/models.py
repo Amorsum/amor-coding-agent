@@ -52,6 +52,11 @@ class SandboxMode(StrEnum):
     DOCKER = "docker"
 
 
+class DependencyBootstrapMode(StrEnum):
+    DISABLED = "disabled"
+    AUTO = "auto"
+
+
 class SandboxConfig(BaseModel):
     """Execution boundary for target-project commands."""
 
@@ -65,11 +70,16 @@ class SandboxConfig(BaseModel):
     tmpfs_mb: int = Field(default=64, ge=16, le=4_096)
     workspace_growth_mb: int = Field(default=256, ge=16, le=32_768)
     network_disabled: bool = True
+    dependency_bootstrap: DependencyBootstrapMode = DependencyBootstrapMode.DISABLED
+    dependency_timeout_seconds: int = Field(default=300, ge=30, le=1_800)
+    dependency_cache_mb: int = Field(default=512, ge=64, le=4_096)
 
     @model_validator(mode="after")
-    def docker_never_enables_network(self) -> "SandboxConfig":
+    def validate_network_boundaries(self) -> "SandboxConfig":
         if self.mode == SandboxMode.DOCKER and not self.network_disabled:
-            raise ValueError("Docker sandbox networking must remain disabled")
+            raise ValueError("task and verification networking must remain disabled")
+        if self.mode != SandboxMode.DOCKER and self.dependency_bootstrap != DependencyBootstrapMode.DISABLED:
+            raise ValueError("automatic dependency bootstrap is available only in Docker mode")
         return self
 
 

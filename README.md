@@ -1,8 +1,10 @@
 # AMOR Coding Agent
 
-AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动的本地 Coding Agent。当前版本支持固定 Benchmark 演示，以及对干净的本地 Git 仓库运行自然语言修复任务。
+AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动的本地 Coding Agent。当前版本支持固定 Benchmark 演示，以及对本地 Python Git 仓库运行自然语言修复任务。
 
-`v0.19.0` 增加本地仓库预检和受保护工作区快照：项目仍需至少有一次 Git Commit，但不再要求用户先提交或 stash 当前修改。页面会列出未提交文件并要求确认，AMOR 随后从当前文件内容创建只读 Git 基线，在独立 worktree 中规划、执行和验证，全程不改动原工作区。Key 仍只驻留当前服务进程内存；公网 [amor.amorsum.top](https://amor.amorsum.top) 继续保持静态展示。
+`v0.20.0` 增加受控的 Python 依赖准备阶段。用户批准后，AMOR 从 `pyproject.toml`、常见 requirements 文件和验证命令中识别包，通过只接收包名的临时 Docker 容器从 PyPI 下载二进制 wheel，并安装到本次任务的独立依赖目录。依赖准备结束后，Agent 与 Verifier 仍使用无网络容器；Provider Key、用户主目录、Docker socket 和目标源码均不会进入联网安装容器。
+
+`v0.19.0` 增加本地仓库预检和受保护工作区快照：项目仍需至少有一次 Git Commit，但不再要求用户先提交或 stash 当前修改。页面会列出未提交文件并要求确认，AMOR 随后从当前文件内容创建只读 Git 基线，在独立 worktree 中规划、执行和验证，全程不改动原工作区。
 
 ## 当前可运行链路
 
@@ -69,7 +71,8 @@ $env:OPENAI_API_KEY = "your-api-key"
 - 直接编辑验收文本、允许路径和验证命令；结构化外部用例保持只读
 - 查看契约修订来源、说明、时间和哈希；任何修改都会使旧审批失效
 - 人工批准后启动执行 Agent
-- 在 Docker 无网络沙箱和宿主机兼容模式之间显式选择；页面会展示 Docker 引擎与镜像就绪状态
+- 在 Docker 分阶段网络沙箱和宿主机兼容模式之间显式选择；页面会展示 Docker 引擎与镜像就绪状态
+- 可批准 AMOR 自动识别并准备 Python 依赖；联网仅限 PyPI 二进制 wheel 下载，Agent 和 Verifier 始终无网络
 - Docker 模式限制为 1 CPU、512 MB 内存、128 个进程、64 MB 临时盘和 256 MB 工作区增长，并支持超时/取消强制终止
 - 通过 SSE 实时展示状态变化、模型轮次、工具结果和 Verifier 事件
 - 协作式取消：队列任务立即取消；运行任务在当前模型请求或验证子进程的安全边界停止
@@ -333,7 +336,8 @@ $env:OPENAI_API_KEY = "your-api-key"
 - `--confirm-send-code` 表示你确认相关代码片段和测试输出会发送给配置的模型服务。
 - OpenAI 可通过 `--base-url` 或 `OPENAI_BASE_URL` 覆盖地址；DeepSeek 对应 `--base-url` 或 `DEEPSEEK_BASE_URL`。
 - `--sandbox docker` 是真实仓库的默认值；Docker 引擎未运行或镜像未提前准备时会失败关闭，不会自动回退或拉取镜像。
-- Docker 模式使用 `--network none`、只读容器根文件系统、能力移除和资源限额；只有隔离 worktree 可写。需要兼容尚未容器化的工具链时可显式使用 `--sandbox host`，但它不提供容器级隔离。
+- `--install-dependencies` 会先从项目声明和验证命令识别 Python 包，在不挂载源码的临时容器中从固定 PyPI 索引下载二进制 wheel。没有该显式参数时，CLI 不会联网安装依赖。
+- Docker 的 Agent 和验证阶段始终使用 `--network none`、只读容器根文件系统、能力移除和资源限额；只有隔离 worktree 可写。需要兼容尚未容器化的工具链时可显式使用 `--sandbox host`，但它不提供容器级隔离。
 - 可用 `--sandbox-cpus`、`--sandbox-memory-mb`、`--sandbox-pids`、`--sandbox-tmpfs-mb` 和 `--sandbox-workspace-growth-mb` 调整资源边界。
 - 验证成功后，补丁仍只保存在产物目录的隔离 `workspace/` 中，不会自动提交或应用回原仓库。
 - 验收规划器与执行 Agent 使用独立 Provider 会话；两阶段各自计入你的 API 用量。
@@ -370,7 +374,7 @@ Web 任务还会写入：
 - 公网暂存只接受 `index.html`、`showcase.json` 和 `manifest.json`，并在复制后再次校验哈希；任何额外文件都会关闭发布流程。
 - GitHub 发布只允许二次验收通过的交付 commit，使用“预期远端分支不存在”的 lease 推送，禁止覆盖已有远端分支；Token 只进入子进程环境和 HTTPS 请求头。
 
-真实任务默认在每任务 Docker 容器中执行目标项目命令，容器禁网且不挂载 API Key、用户主目录或 Docker socket。文件检索与补丁仍由宿主 AMOR 进程在隔离 worktree 内完成，并受路径策略约束。宿主机兼容模式只适合受信任仓库。即使使用容器，当前本地路径选择、Provider 凭据和服务访问模型也不满足多租户公网要求。
+真实任务默认在每任务 Docker 容器中执行目标项目命令。依赖准备需要用户单独确认，仅向联网容器传递经过校验的包需求字符串，不挂载目标源码；依赖写入本次运行产物目录并以只读方式挂载到后续容器。Agent 与 Verifier 容器禁网，所有容器均不挂载 API Key、用户主目录或 Docker socket。文件检索与补丁仍由宿主 AMOR 进程在隔离 worktree 内完成，并受路径策略约束。宿主机兼容模式只适合受信任仓库。即使使用容器，当前本地路径选择、Provider 凭据和服务访问模型也不满足多租户公网要求。
 
 ## 项目结构
 
@@ -390,6 +394,6 @@ out/                    经确认并验证的公网静态页面
 .openai/hosting.json    公网托管的静态目录边界
 ```
 
-模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)，第十二迭代的补丁交付边界见 [ADR 0012](./docs/adr/0012-verified-patch-delivery.md)，第十三迭代的容器命令沙箱见 [ADR 0013](./docs/adr/0013-per-task-container-sandbox.md)，第十四迭代的公开快照边界见 [ADR 0014](./docs/adr/0014-static-redacted-showcase.md)，第十五迭代的静态公网发布边界见 [ADR 0015](./docs/adr/0015-static-public-deployment.md)，第十六迭代的 GitHub Draft PR 边界见 [ADR 0016](./docs/adr/0016-verified-github-draft-pr.md)，第十七迭代的只读项目展示入口见 [ADR 0017](./docs/adr/0017-static-project-showcase-boundary.md)，第十八迭代的进程内凭据与本地就绪检查见 [ADR 0018](./docs/adr/0018-local-session-credentials.md)，第十九迭代的受保护工作区快照见 [ADR 0019](./docs/adr/0019-protected-working-tree-snapshots.md)。
+模型 Provider 不记录 API Key。轨迹只保存响应 ID、工具名称、使用量、工具结果和简短输出摘要，不保存私有推理过程。第五迭代的 Provider 会话设计见 [ADR 0005](./docs/adr/0005-provider-session-and-cost-accounting.md)，第六迭代的 Benchmark 设计见 [ADR 0006](./docs/adr/0006-benchmark-credibility.md)，第七迭代的只读 Web 边界见 [ADR 0007](./docs/adr/0007-read-only-web-workbench.md)，第八迭代的验证闭环见 [ADR 0008](./docs/adr/0008-verification-driven-repair.md)，第九迭代的独立验收规划设计见 [ADR 0009](./docs/adr/0009-independent-acceptance-planning.md)，第十迭代的本地交互式任务边界见 [ADR 0010](./docs/adr/0010-local-interactive-workbench.md)，第十一迭代的契约修订设计见 [ADR 0011](./docs/adr/0011-contract-revision-loop.md)，第十二迭代的补丁交付边界见 [ADR 0012](./docs/adr/0012-verified-patch-delivery.md)，第十三迭代的容器命令沙箱见 [ADR 0013](./docs/adr/0013-per-task-container-sandbox.md)，第十四迭代的公开快照边界见 [ADR 0014](./docs/adr/0014-static-redacted-showcase.md)，第十五迭代的静态公网发布边界见 [ADR 0015](./docs/adr/0015-static-public-deployment.md)，第十六迭代的 GitHub Draft PR 边界见 [ADR 0016](./docs/adr/0016-verified-github-draft-pr.md)，第十七迭代的只读项目展示入口见 [ADR 0017](./docs/adr/0017-static-project-showcase-boundary.md)，第十八迭代的进程内凭据与本地就绪检查见 [ADR 0018](./docs/adr/0018-local-session-credentials.md)，第十九迭代的受保护工作区快照见 [ADR 0019](./docs/adr/0019-protected-working-tree-snapshots.md)，第二十迭代的受控依赖准备见 [ADR 0020](./docs/adr/0020-controlled-dependency-bootstrap.md)。
 
 完整产品规划见 [AMOR-Coding-Agent项目实现方案.md](./AMOR-Coding-Agent项目实现方案.md)。

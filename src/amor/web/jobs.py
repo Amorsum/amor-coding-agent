@@ -22,8 +22,8 @@ from amor.acceptance import (
 )
 from amor.context import ContextStrategy
 from amor.delivery import DeliveryReport, deliver_verified_patch, patch_digest
-from amor.domain import RunLimits, RunReport, SandboxConfig, TaskSpec
-from amor.execution import docker_runtime_status
+from amor.domain import DependencyBootstrapMode, RunLimits, RunReport, SandboxConfig, TaskSpec
+from amor.execution import DependencyBootstrapError, docker_runtime_status
 from amor.local_runner import run_repository_task
 from amor.orchestrator import PlanningStrategy
 from amor.profiler import RepositoryProfiler
@@ -60,6 +60,7 @@ class JobStatus(StrEnum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
+    ENVIRONMENT_BLOCKED = "ENVIRONMENT_BLOCKED"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     CANCEL_REQUESTED = "CANCEL_REQUESTED"
     CANCELLED = "CANCELLED"
@@ -70,6 +71,7 @@ TERMINAL_JOB_STATUSES = {
     JobStatus.SUCCEEDED,
     JobStatus.FAILED,
     JobStatus.BLOCKED,
+    JobStatus.ENVIRONMENT_BLOCKED,
     JobStatus.BUDGET_EXHAUSTED,
     JobStatus.DELIVERY_FAILED,
     JobStatus.CANCELLED,
@@ -133,6 +135,16 @@ class ExecutionRequest(BaseModel):
     planning_strategy: Literal["direct", "structured"] = "structured"
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     confirm_send_code: Literal[True]
+    confirm_dependency_install: bool = False
+
+    @model_validator(mode="after")
+    def dependency_install_requires_consent(self) -> "ExecutionRequest":
+        if (
+            self.sandbox.dependency_bootstrap == DependencyBootstrapMode.AUTO
+            and not self.confirm_dependency_install
+        ):
+            raise ValueError("automatic dependency installation requires explicit confirmation")
+        return self
 
 
 class ClarificationAnswer(BaseModel):
@@ -477,7 +489,10 @@ class TaskJobManager:
     def approve_and_run(self, job_id: str, request: ExecutionRequest) -> dict[str, Any]:
         with self._lock:
             managed = self._get(job_id)
-            if managed.snapshot.status != JobStatus.AWAITING_APPROVAL:
+            if managed.snapshot.status not in {
+                JobStatus.AWAITING_APPROVAL,
+                JobStatus.ENVIRONMENT_BLOCKED,
+            }:
                 raise JobConflict("job is not awaiting contract approval")
             plan = self._load_job_plan(managed.snapshot)
             if plan.contract_sha256 != request.contract_sha256:
@@ -490,6 +505,7 @@ class TaskJobManager:
                 max_output_tokens=request.max_output_tokens,
             )
             managed.snapshot.execution_request = request
+            managed.cancel_event.clear()
             managed.snapshot.status = JobStatus.EXECUTION_QUEUED
             managed.snapshot.phase = "EXECUTION_QUEUED"
             managed.snapshot.error = None
@@ -855,6 +871,8 @@ class TaskJobManager:
                     "run_finished",
                     "任务验收通过" if status == JobStatus.SUCCEEDED else f"任务结束：{status.value}",
                 )
+        except DependencyBootstrapError as exc:
+            self._finish_environment_blocked(job_id, exc)
         except Exception as exc:
             self._finish_error(job_id, exc)
 
@@ -1014,6 +1032,9 @@ class TaskJobManager:
                             "tmpfs_mb",
                             "workspace_growth_mb",
                             "network_disabled",
+                            "dependency_bootstrap",
+                            "dependency_timeout_seconds",
+                            "dependency_cache_mb",
                         )
                     }
                     message = (
@@ -1021,6 +1042,25 @@ class TaskJobManager:
                         if payload.get("mode") == "docker"
                         else "目标项目命令使用宿主机兼容模式"
                     )
+                elif kind == "dependency_bootstrap_started":
+                    safe_payload = {
+                        "network_scope": payload.get("network_scope"),
+                        "validation_network": payload.get("validation_network"),
+                    }
+                    message = "正在隔离容器中准备 Python 依赖"
+                elif kind == "dependency_bootstrap_finished":
+                    safe_payload = {
+                        key: payload.get(key)
+                        for key in (
+                            "packages",
+                            "sources",
+                            "duration_ms",
+                            "installed",
+                            "network_scope",
+                            "validation_network",
+                        )
+                    }
+                    message = "依赖准备完成；后续命令继续保持无网络"
                 else:
                     return
             with self._lock:
@@ -1073,6 +1113,24 @@ class TaskJobManager:
             managed.snapshot.phase = "FAILED"
             managed.snapshot.error = str(exc)[:2_000]
             self._append_event_locked(managed, "error", "任务执行失败")
+
+    def _finish_environment_blocked(self, job_id: str, exc: Exception) -> None:
+        with self._lock:
+            managed = self._get(job_id)
+            if managed.cancel_event.is_set():
+                managed.snapshot.status = JobStatus.CANCELLED
+                managed.snapshot.phase = "CANCELLED"
+                managed.snapshot.error = None
+                self._append_event_locked(managed, "cancelled", "任务已取消")
+                return
+            managed.snapshot.status = JobStatus.ENVIRONMENT_BLOCKED
+            managed.snapshot.phase = "ENVIRONMENT_BLOCKED"
+            managed.snapshot.error = str(exc)[:2_000]
+            self._append_event_locked(
+                managed,
+                "environment_blocked",
+                "依赖准备失败；代码 Agent 尚未开始执行",
+            )
 
     def _finish_delivery_cancelled(self, job_id: str) -> None:
         with self._lock:

@@ -10,7 +10,7 @@ from amor.acceptance import (
     load_acceptance_plan,
     run_acceptance_planning,
 )
-from amor.domain import RunLimits, SandboxConfig, SandboxMode
+from amor.domain import DependencyBootstrapMode, RunLimits, SandboxConfig, SandboxMode
 from amor.benchmarks.experiment import run_planning_experiment, run_strategy_experiment
 from amor.benchmarks.runner import SUPPORTED_PROVIDERS, run_benchmark
 from amor.context import SUPPORTED_CONTEXT_STRATEGIES, ContextStrategy
@@ -113,6 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--sandbox-pids", type=int, default=128)
     run.add_argument("--sandbox-tmpfs-mb", type=int, default=64)
     run.add_argument("--sandbox-workspace-growth-mb", type=int, default=256)
+    run.add_argument(
+        "--install-dependencies",
+        action="store_true",
+        help="allow a short PyPI-only Docker bootstrap phase before networkless execution",
+    )
     run.add_argument(
         "--confirm-send-code",
         action="store_true",
@@ -359,6 +364,11 @@ def main() -> int:
                     pids_limit=arguments.sandbox_pids,
                     tmpfs_mb=arguments.sandbox_tmpfs_mb,
                     workspace_growth_mb=arguments.sandbox_workspace_growth_mb,
+                    dependency_bootstrap=(
+                        DependencyBootstrapMode.AUTO
+                        if arguments.install_dependencies
+                        else DependencyBootstrapMode.DISABLED
+                    ),
                 ),
             )
         except (AcceptanceContractError, RuntimeError, WorkspaceError, ValueError) as exc:

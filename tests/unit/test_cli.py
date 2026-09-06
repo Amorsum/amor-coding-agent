@@ -27,6 +27,27 @@ def test_run_accepts_deepseek_provider() -> None:
     assert arguments.max_verification_retries == 2
     assert arguments.sandbox == "docker"
     assert arguments.sandbox_memory_mb == 512
+    assert arguments.install_dependencies is False
+
+
+def test_run_can_explicitly_enable_dependency_bootstrap() -> None:
+    arguments = build_parser().parse_args(
+        [
+            "run",
+            ".",
+            "--task",
+            "fix it",
+            "--allow",
+            "src/**",
+            "--validation-json",
+            '["python","-m","pytest"]',
+            "--model",
+            "implementation-model",
+            "--install-dependencies",
+        ]
+    )
+
+    assert arguments.install_dependencies is True
 
 
 def test_deepseek_pricing_defaults_to_cny() -> None:

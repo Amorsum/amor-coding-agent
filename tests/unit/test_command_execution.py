@@ -118,3 +118,73 @@ def test_docker_executor_rejects_unmounted_absolute_arguments(
             timeout_seconds=30,
             max_output_chars=1_000,
         )
+
+
+def test_dependency_bootstrap_has_scoped_network_and_no_source_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    dependencies = tmp_path / "dependencies"
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        command_module,
+        "docker_runtime_status",
+        lambda image: {"engine_available": True, "image_available": True, "reason": None},
+    )
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return CommandOutcome(returncode=0, output="installed", duration_ms=2, executor="docker")
+
+    monkeypatch.setattr(command_module, "_run_process", fake_run)
+    executor = DockerCommandExecutor(workspace, docker_config(), dependencies)
+
+    result = executor.prepare_python_packages(["pytest>=8,<10"])
+
+    assert result.ok
+    argv = captured["command"]
+    assert isinstance(argv, list)
+    assert argv[argv.index("--network") : argv.index("--network") + 2] == ["--network", "bridge"]
+    assert any("https://pypi.org/simple" in value for value in argv)
+    assert "--only-binary=:all:" in argv
+    assert str(workspace.resolve()) not in " ".join(argv)
+    assert "/amor/deps" in " ".join(argv)
+
+
+def test_validation_mounts_prepared_dependencies_read_only_and_stays_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    dependencies = tmp_path / "dependencies"
+    dependencies.mkdir()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        command_module,
+        "docker_runtime_status",
+        lambda image: {"engine_available": True, "image_available": True, "reason": None},
+    )
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return CommandOutcome(returncode=0, output="ok", duration_ms=1, executor="docker")
+
+    monkeypatch.setattr(command_module, "_run_process", fake_run)
+    executor = DockerCommandExecutor(workspace, docker_config(), dependencies)
+
+    result = executor.run(
+        ["python", "-m", "pytest"],
+        cwd=workspace,
+        timeout_seconds=30,
+        max_output_chars=1_000,
+    )
+
+    assert result.ok
+    argv = captured["command"]
+    assert isinstance(argv, list)
+    assert argv[argv.index("--network") : argv.index("--network") + 2] == ["--network", "none"]
+    assert any("target=/amor/deps,readonly" in value for value in argv)
+    assert "PYTHONPATH=/amor/deps/python:/workspace/src:/workspace" in argv
