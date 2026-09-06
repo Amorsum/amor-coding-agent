@@ -11,6 +11,7 @@ def build_api_provider(
     provider_name: str,
     *,
     model: str,
+    api_key: str | None = None,
     base_url: str | None = None,
     timeout_seconds: int = 120,
     max_output_tokens: int = 4_000,
@@ -21,9 +22,21 @@ def build_api_provider(
     }.get(provider_name)
     if provider_class is None:
         raise ProviderError(f"unsupported API provider: {provider_name}")
-    return provider_class.from_environment(
+    if api_key is None:
+        return provider_class.from_environment(
+            model=model,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+            max_output_tokens=max_output_tokens,
+        )
+    default_urls = {
+        "openai-responses": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "deepseek-responses": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+    }
+    return provider_class(
         model=model,
-        base_url=base_url,
+        api_key=api_key,
+        base_url=base_url or default_urls[provider_name],
         timeout_seconds=timeout_seconds,
         max_output_tokens=max_output_tokens,
     )

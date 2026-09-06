@@ -11,8 +11,9 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from amor.providers import ProviderCredentialStore
 from amor.showcase import ShowcaseError, ShowcaseExporter
 from amor.web.artifacts import ArtifactNotFound, ArtifactStore, InvalidArtifact
 from amor.web.jobs import (
@@ -35,6 +36,16 @@ class ShowcaseRequest(BaseModel):
     confirm_public: Literal[True]
 
 
+ProviderName = Literal["openai-responses", "deepseek-responses"]
+
+
+class ProviderCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: SecretStr
+    confirm_session_only: Literal[True]
+
+
 def create_app(
     artifacts_root: Path | None = None,
     frontend_root: Path | None = None,
@@ -44,31 +55,39 @@ def create_app(
     store = ArtifactStore(resolved_artifacts)
     showcase_exporter = ShowcaseExporter(resolved_artifacts)
     showcase_exporter.output_root.mkdir(parents=True, exist_ok=True)
-    manager = job_manager or TaskJobManager(resolved_artifacts)
+    credential_store = ProviderCredentialStore()
+    manager = job_manager or TaskJobManager(
+        resolved_artifacts,
+        credential_store=credential_store,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         yield
         manager.shutdown()
+        credential_store.clear()
 
     app = FastAPI(
         title="AMOR Local Workbench API",
-        version="0.17.0",
+        version="0.18.0",
         description="Local task execution and artifact inspection API.",
         lifespan=lifespan,
     )
     app.state.artifact_store = store
     app.state.job_manager = manager
+    app.state.credential_store = credential_store
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
 
     @app.middleware("http")
     async def protect_local_mutations(request: Request, call_next: Any):
-        if request.method == "POST" and request.url.path.startswith(("/api/jobs", "/api/showcases")):
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path.startswith(
+            ("/api/jobs", "/api/showcases", "/api/settings")
+        ):
             try:
                 _require_local_origin(request)
             except HTTPException as exc:
@@ -87,6 +106,26 @@ def create_app(
     @app.get("/api/runtime")
     def runtime() -> dict[str, Any]:
         return manager.runtime()
+
+    @app.post("/api/settings/providers/{provider}")
+    def set_provider_credential(
+        provider: ProviderName,
+        payload: ProviderCredentialRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_local_origin(request)
+        try:
+            credential_store.set_session(provider, payload.api_key.get_secret_value())
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"provider": provider, "configured": True, "source": "session"}
+
+    @app.delete("/api/settings/providers/{provider}")
+    def clear_provider_credential(provider: ProviderName, request: Request) -> dict[str, Any]:
+        _require_local_origin(request)
+        credential_store.clear_session(provider)
+        source = credential_store.source(provider)
+        return {"provider": provider, "configured": source != "missing", "source": source}
 
     @app.get("/api/jobs")
     def list_jobs() -> dict[str, Any]:

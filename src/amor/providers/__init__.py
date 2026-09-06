@@ -1,4 +1,5 @@
 from amor.providers.base import ModelProvider, ModelToolCall, ModelTurn, ProviderError
+from amor.providers.credentials import ProviderCredentialStore
 from amor.providers.deepseek_responses import DeepSeekResponsesProvider
 from amor.providers.fake import FakeModelProvider
 from amor.providers.factory import build_api_provider, provider_configuration
@@ -12,6 +13,7 @@ __all__ = [
     "ModelTurn",
     "OpenAIResponsesProvider",
     "ProviderError",
+    "ProviderCredentialStore",
     "build_api_provider",
     "provider_configuration",
 ]

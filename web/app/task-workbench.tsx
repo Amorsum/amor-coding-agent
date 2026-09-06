@@ -49,6 +49,7 @@ type RuntimeInfo = {
   max_concurrent_jobs: number;
   working_directory?: string;
   providers: Record<ProviderName, boolean>;
+  provider_sources: Record<ProviderName, 'environment' | 'session' | 'missing'>;
   docker: {
     cli_available: boolean;
     engine_available: boolean;
@@ -247,6 +248,12 @@ export function TaskWorkbench() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const refreshRuntime = async () => {
+    const payload = await api<RuntimeInfo>('/api/runtime');
+    setRuntime(payload);
+    return payload;
+  };
 
   const loadJobs = async (preferredId?: string) => {
     const payload = await api<{ items: Job[] }>('/api/jobs');
@@ -460,6 +467,8 @@ export function TaskWorkbench() {
             submitting={submitting}
             onChange={setForm}
             onSubmit={createJob}
+            onRuntimeUpdated={refreshRuntime}
+            onError={(reason) => setError(errorMessage(reason))}
           />
         ) : !job ? (
           <div className="space-y-4">
@@ -477,6 +486,7 @@ export function TaskWorkbench() {
               void loadJobs(updated.job_id);
             }}
             onError={(reason) => setError(errorMessage(reason))}
+            onRuntimeUpdated={refreshRuntime}
           />
         )}
       </section>
@@ -490,12 +500,16 @@ function TaskCreationForm({
   submitting,
   onChange,
   onSubmit,
+  onRuntimeUpdated,
+  onError,
 }: {
   form: TaskForm;
   runtime: RuntimeInfo | null;
   submitting: boolean;
   onChange: (form: TaskForm) => void;
   onSubmit: () => void;
+  onRuntimeUpdated: () => Promise<RuntimeInfo>;
+  onError: (reason: unknown) => void;
 }) {
   const configured = runtime?.providers[form.provider] ?? false;
   return (
@@ -608,6 +622,13 @@ function TaskCreationForm({
         </CardContent>
       </Card>
 
+      <ProviderCredentialPanel
+        provider={form.provider}
+        runtime={runtime}
+        onRuntimeUpdated={onRuntimeUpdated}
+        onError={onError}
+      />
+
       <label className="consent-row">
         <input
           type="checkbox"
@@ -615,9 +636,11 @@ function TaskCreationForm({
           onChange={(event) => onChange({ ...form, confirm: event.target.checked })}
         />
         <span>
-          我确认相关代码片段和测试输出可以发送给所选模型服务。API Key 仅由本地服务端环境变量读取。
+          我确认相关代码片段和测试输出可以发送给所选模型服务。API Key 只由本机服务读取，不会写入任务产物。
         </span>
       </label>
+
+      <ReadinessSummary form={form} runtime={runtime} />
 
       <div className="flex justify-end">
         <Button
@@ -627,11 +650,146 @@ function TaskCreationForm({
           className="bg-cyan-300 text-slate-950 hover:bg-cyan-200"
         >
           {submitting ? <LoaderCircle className="animate-spin" /> : <Send />}
-          启动只读验收规划
+          创建任务并生成验收方案
         </Button>
       </div>
     </form>
   );
+}
+
+function ProviderCredentialPanel({
+  provider,
+  runtime,
+  onRuntimeUpdated,
+  onError,
+  compact = false,
+}: {
+  provider: ProviderName;
+  runtime: RuntimeInfo | null;
+  onRuntimeUpdated: () => Promise<RuntimeInfo>;
+  onError: (reason: unknown) => void;
+  compact?: boolean;
+}) {
+  const [apiKey, setApiKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const source = runtime?.provider_sources[provider] ?? 'missing';
+  const configured = runtime?.providers[provider] ?? false;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api(`/api/settings/providers/${provider}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: apiKey, confirm_session_only: true }),
+      });
+      setApiKey('');
+      await onRuntimeUpdated();
+    } catch (reason) {
+      onError(reason);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clear = async () => {
+    setSaving(true);
+    try {
+      await api(`/api/settings/providers/${provider}`, { method: 'DELETE' });
+      setApiKey('');
+      await onRuntimeUpdated();
+    } catch (reason) {
+      onError(reason);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const contents = (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="flex items-center gap-2 font-medium"><KeyRound className="size-4 text-cyan-300" />模型服务凭据</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            输入只发送到 127.0.0.1，保存在当前 AMOR 服务进程内存中；关闭服务后自动失效，不写入浏览器存储、日志或任务产物。
+          </p>
+        </div>
+        <Badge variant="outline" className={configured ? 'border-emerald-400/30 text-emerald-300' : 'border-amber-300/30 text-amber-200'}>
+          {configured ? `已配置 · ${credentialSourceLabel(source)}` : '需要配置'}
+        </Badge>
+      </div>
+      <div className={compact ? 'grid gap-3' : 'grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]'}>
+        <input
+          className="task-input font-mono"
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          value={apiKey}
+          onChange={(event) => setApiKey(event.target.value)}
+          placeholder={configured ? '输入新 Key 可替换当前会话凭据' : '粘贴 API Key（至少 8 个字符）'}
+          aria-label={`${provider} API Key`}
+        />
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" disabled={saving || apiKey.trim().length < 8} onClick={() => void save()}>
+            {saving ? <LoaderCircle className="animate-spin" /> : <KeyRound />}
+            {configured ? '替换' : '仅本次会话使用'}
+          </Button>
+          {source === 'session' && (
+            <Button type="button" variant="outline" disabled={saving} onClick={() => void clear()}>
+              <X />清除
+            </Button>
+          )}
+        </div>
+      </div>
+      {source === 'environment' && (
+        <p className="text-xs text-muted-foreground">当前使用系统环境变量。页面不会显示或回传它的内容。</p>
+      )}
+    </div>
+  );
+
+  if (compact) {
+    return <div className="rounded-lg border border-amber-300/20 bg-amber-300/[0.04] p-4">{contents}</div>;
+  }
+  return <Card className="border-cyan-300/15 bg-card/75"><CardContent className="pt-5">{contents}</CardContent></Card>;
+}
+
+function ReadinessSummary({ form, runtime }: { form: TaskForm; runtime: RuntimeInfo | null }) {
+  const providerReady = runtime?.providers[form.provider] ?? false;
+  const dockerReady = Boolean(runtime?.docker.engine_available && runtime?.docker.image_available);
+  const checks = [
+    { label: '模型凭据', ready: providerReady, detail: providerReady ? '已就绪' : '请在上方设置 API Key' },
+    { label: '仓库路径', ready: Boolean(form.repository.trim()), detail: form.repository.trim() ? '已填写' : '请填写绝对路径' },
+    { label: '任务描述', ready: Boolean(form.instruction.trim()), detail: form.instruction.trim() ? '已填写' : '请描述要完成的改动' },
+    { label: '模型 ID', ready: Boolean(form.model.trim()), detail: form.model.trim() ? '已填写' : '请填写 Provider 支持的模型 ID' },
+    { label: '发送确认', ready: form.confirm, detail: form.confirm ? '已确认' : '请确认代码可发送给模型服务' },
+  ];
+  const blockers = checks.filter((check) => !check.ready);
+  return (
+    <div className="rounded-lg border border-white/8 bg-black/15 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium">启动前自检</p>
+        <span className={blockers.length ? 'text-xs text-amber-200' : 'text-xs text-emerald-300'}>
+          {blockers.length ? `还需完成 ${blockers.length} 项` : '可以创建任务'}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {checks.map((check) => (
+          <div key={check.label} className="flex items-start gap-2 text-xs">
+            {check.ready ? <Check className="mt-0.5 size-3.5 text-emerald-300" /> : <CircleAlert className="mt-0.5 size-3.5 text-amber-200" />}
+            <span><strong>{check.label}</strong><br /><span className="text-muted-foreground">{check.detail}</span></span>
+          </div>
+        ))}
+        <div className="flex items-start gap-2 text-xs">
+          {dockerReady ? <Check className="mt-0.5 size-3.5 text-emerald-300" /> : <CircleAlert className="mt-0.5 size-3.5 text-amber-200" />}
+          <span><strong>Docker 执行</strong><br /><span className="text-muted-foreground">{dockerReady ? '已就绪' : '规划可继续；执行前需启动 Docker，或选择宿主机兼容模式'}</span></span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function credentialSourceLabel(source?: RuntimeInfo['provider_sources'][ProviderName]): string {
+  return { environment: '环境变量', session: '本次会话', missing: '未配置' }[source ?? 'missing'];
 }
 
 function JobDetail({
@@ -641,6 +799,7 @@ function JobDetail({
   onCancel,
   onUpdated,
   onError,
+  onRuntimeUpdated,
 }: {
   job: Job;
   runtime: RuntimeInfo | null;
@@ -648,6 +807,7 @@ function JobDetail({
   onCancel: () => void;
   onUpdated: (job: Job) => void;
   onError: (reason: unknown) => void;
+  onRuntimeUpdated: () => Promise<RuntimeInfo>;
 }) {
   const canCancel = activeStatuses.has(job.status) || job.status === 'AWAITING_APPROVAL';
   return (
@@ -676,9 +836,9 @@ function JobDetail({
       )}
 
       {job.status === 'AWAITING_APPROVAL' && job.plan ? (
-        <ContractReview key={job.plan.contract_sha256} job={job} plan={job.plan} runtime={runtime} onUpdated={onUpdated} onError={onError} />
+        <ContractReview key={job.plan.contract_sha256} job={job} plan={job.plan} runtime={runtime} onUpdated={onUpdated} onError={onError} onRuntimeUpdated={onRuntimeUpdated} />
       ) : job.status === 'NEEDS_INPUT' && job.plan ? (
-        <NeedsInput key={job.plan.contract_sha256} job={job} plan={job.plan} runtime={runtime} onUpdated={onUpdated} onError={onError} />
+        <NeedsInput key={job.plan.contract_sha256} job={job} plan={job.plan} runtime={runtime} onUpdated={onUpdated} onError={onError} onRuntimeUpdated={onRuntimeUpdated} />
       ) : job.run ? (
         <RunEvidence job={job} run={job.run} onUpdated={onUpdated} onError={onError} />
       ) : (
@@ -694,12 +854,14 @@ function ContractReview({
   runtime,
   onUpdated,
   onError,
+  onRuntimeUpdated,
 }: {
   job: Job;
   plan: AcceptancePlan;
   runtime: RuntimeInfo | null;
   onUpdated: (job: Job) => void;
   onError: (reason: unknown) => void;
+  onRuntimeUpdated: () => Promise<RuntimeInfo>;
 }) {
   const [provider, setProvider] = useState<ProviderName>(job.planning_request.provider);
   const [model, setModel] = useState(job.planning_request.model);
@@ -787,8 +949,17 @@ function ContractReview({
             </select>
           </Field>
           <p className={providerConfigured ? 'text-xs text-emerald-300' : 'text-xs text-amber-200'}>
-            {providerConfigured ? '所选 Provider 的服务端 Key 已配置' : '所选 Provider 的服务端 Key 未配置'}
+            {providerConfigured ? `所选 Provider 已配置（${credentialSourceLabel(runtime?.provider_sources[provider])}）` : '所选 Provider 尚未配置'}
           </p>
+          {!providerConfigured && (
+            <ProviderCredentialPanel
+              provider={provider}
+              runtime={runtime}
+              compact
+              onRuntimeUpdated={onRuntimeUpdated}
+              onError={onError}
+            />
+          )}
           <Field label="执行模型 ID">
             <input className="task-input font-mono" value={model} onChange={(event) => setModel(event.target.value)} required />
           </Field>
@@ -982,12 +1153,14 @@ function NeedsInput({
   runtime,
   onUpdated,
   onError,
+  onRuntimeUpdated,
 }: {
   job: Job;
   plan: AcceptancePlan;
   runtime: RuntimeInfo | null;
   onUpdated: (job: Job) => void;
   onError: (reason: unknown) => void;
+  onRuntimeUpdated: () => Promise<RuntimeInfo>;
 }) {
   const [answers, setAnswers] = useState<Record<string, string>>(
     Object.fromEntries(plan.questions.map((question) => [question, ''])),
@@ -1061,7 +1234,18 @@ function NeedsInput({
           {!providerConfigured && <p className="text-xs text-amber-200">规划 Provider 的服务端 Key 未配置，暂时只能直接编辑契约。</p>}
         </CardContent>
       </Card>
-      <RevisionHistory revisions={job.contract_revisions} currentSha={plan.contract_sha256} />
+      <div className="space-y-4">
+        {!providerConfigured && (
+          <ProviderCredentialPanel
+            provider={job.planning_request.provider}
+            runtime={runtime}
+            compact
+            onRuntimeUpdated={onRuntimeUpdated}
+            onError={onError}
+          />
+        )}
+        <RevisionHistory revisions={job.contract_revisions} currentSha={plan.contract_sha256} />
+      </div>
     </div>
   );
 }

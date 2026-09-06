@@ -27,7 +27,7 @@ from amor.execution import docker_runtime_status
 from amor.local_runner import run_repository_task
 from amor.orchestrator import PlanningStrategy
 from amor.profiler import RepositoryProfiler
-from amor.providers import ModelProvider, build_api_provider
+from amor.providers import ModelProvider, ProviderCredentialStore, build_api_provider
 
 
 ProviderName = Literal["openai-responses", "deepseek-responses"]
@@ -313,6 +313,7 @@ class TaskJobManager:
         *,
         project_root: Path | None = None,
         provider_factory: ProviderFactory = build_api_provider,
+        credential_store: ProviderCredentialStore | None = None,
         planner: Planner = run_acceptance_planning,
         runner: Runner = run_repository_task,
         deliverer: Deliverer = deliver_verified_patch,
@@ -324,7 +325,15 @@ class TaskJobManager:
             if project_root is not None
             else Path(__file__).resolve().parents[3]
         )
-        self.provider_factory = provider_factory
+        self.credential_store = credential_store
+        if credential_store is None:
+            self.provider_factory = provider_factory
+        else:
+            self.provider_factory = lambda provider_name, **kwargs: provider_factory(
+                provider_name,
+                api_key=credential_store.require(provider_name),
+                **kwargs,
+            )
         self.planner = planner
         self.runner = runner
         self.deliverer = deliverer
@@ -336,11 +345,25 @@ class TaskJobManager:
     def runtime(self) -> dict[str, Any]:
         from amor.providers import provider_configuration
 
+        providers = (
+            self.credential_store.configuration()
+            if self.credential_store is not None
+            else provider_configuration()
+        )
+        provider_sources = (
+            self.credential_store.sources()
+            if self.credential_store is not None
+            else {
+                provider: "environment" if configured else "missing"
+                for provider, configured in providers.items()
+            }
+        )
         return {
             "mode": "local",
             "max_concurrent_jobs": 1,
             "working_directory": str(Path.cwd().resolve()),
-            "providers": provider_configuration(),
+            "providers": providers,
+            "provider_sources": provider_sources,
             "docker": docker_runtime_status(),
         }
 

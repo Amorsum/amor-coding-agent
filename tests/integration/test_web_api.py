@@ -78,3 +78,69 @@ def test_web_app_serves_built_frontend_without_shadowing_api(tmp_path: Path) -> 
 
     assert client.get("/").text == "<h1>AMOR Workbench</h1>"
     assert client.get("/api/health").json()["status"] == "ok"
+
+
+def test_session_provider_key_is_local_ephemeral_and_never_returned(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    secret = "test-session-secret-123456"
+    app = create_app(artifacts_root=tmp_path, frontend_root=tmp_path / "missing")
+
+    with TestClient(app) as client:
+        missing = client.get("/api/runtime").json()
+        assert missing["providers"]["openai-responses"] is False
+        assert missing["provider_sources"]["openai-responses"] == "missing"
+
+        rejected = client.post(
+            "/api/settings/providers/openai-responses",
+            json={"api_key": secret, "confirm_session_only": True},
+            headers={"Origin": "https://attacker.example"},
+        )
+        assert rejected.status_code == 403
+
+        invalid_secret = "short"
+        invalid = client.post(
+            "/api/settings/providers/openai-responses",
+            json={"api_key": invalid_secret, "confirm_session_only": True},
+        )
+        assert invalid.status_code == 422
+        assert invalid_secret not in invalid.text
+
+        saved = client.post(
+            "/api/settings/providers/openai-responses",
+            json={"api_key": secret, "confirm_session_only": True},
+            headers={"Origin": "http://127.0.0.1:8765"},
+        )
+        assert saved.status_code == 200
+        assert secret not in saved.text
+
+        configured = client.get("/api/runtime")
+        assert configured.json()["providers"]["openai-responses"] is True
+        assert configured.json()["provider_sources"]["openai-responses"] == "session"
+        assert secret not in configured.text
+
+        cleared = client.delete(
+            "/api/settings/providers/openai-responses",
+            headers={"Origin": "http://localhost:8765"},
+        )
+        assert cleared.json()["source"] == "missing"
+        assert client.get("/api/runtime").json()["providers"]["openai-responses"] is False
+
+
+def test_environment_provider_key_cannot_be_revealed_or_cleared_from_ui(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = "test-environment-secret-123456"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", secret)
+    app = create_app(artifacts_root=tmp_path, frontend_root=tmp_path / "missing")
+
+    with TestClient(app) as client:
+        runtime = client.get("/api/runtime")
+        assert runtime.json()["provider_sources"]["deepseek-responses"] == "environment"
+        assert secret not in runtime.text
+        cleared = client.delete("/api/settings/providers/deepseek-responses")
+        assert cleared.json()["source"] == "environment"
+        assert secret not in cleared.text
