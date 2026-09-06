@@ -9,6 +9,7 @@ All notable changes to AMOR Coding Agent are documented here. The project follow
 
 - Added a bounded Python search fallback so clean machines and CI runners do not require ripgrep.
 - Matched the host UID/GID in Linux Docker containers so bind-mounted workspaces and dependency directories remain writable without root-owned output.
+- Enforced LF for tracked fixtures so exact patch contexts remain reproducible on Windows checkouts.
 - Updated GitHub Actions to their Node 24-based major versions.
 
 ## [1.0.0] - 2026-09-06
