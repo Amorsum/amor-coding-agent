@@ -1,3 +1,3 @@
 """AMOR coding-agent foundation."""
 
-__version__ = "0.20.0"
+__version__ = "1.0.0"

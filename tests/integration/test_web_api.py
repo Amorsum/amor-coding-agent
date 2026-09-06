@@ -12,6 +12,7 @@ def test_artifact_api_exposes_experiment_and_attempt(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
+    assert health.json()["version"] == "1.0.0"
     assert health.json()["experiment_count"] == 1
 
     experiments = client.get("/api/experiments").json()["items"]

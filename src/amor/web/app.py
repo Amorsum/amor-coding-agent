@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from amor import __version__
 from amor.profiler import RepositoryProfiler
 from amor.providers import ProviderCredentialStore
 from amor.showcase import ShowcaseError, ShowcaseExporter
@@ -85,7 +86,7 @@ def create_app(
 
     app = FastAPI(
         title="AMOR Local Workbench API",
-        version="0.20.0",
+        version=__version__,
         description="Local task execution and artifact inspection API.",
         lifespan=lifespan,
     )
@@ -114,6 +115,7 @@ def create_app(
     def health() -> dict[str, Any]:
         return {
             "status": "ok",
+            "version": __version__,
             "artifacts_ready": resolved_artifacts.is_dir(),
             "experiment_count": len(store.list_experiments()),
             "job_count": len(manager.list_jobs()),

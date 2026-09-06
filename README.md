@@ -1,10 +1,72 @@
 # AMOR Coding Agent
 
-AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动的本地 Coding Agent。当前版本支持固定 Benchmark 演示，以及对本地 Python Git 仓库运行自然语言修复任务。
+[![CI](https://github.com/Amorsum/amor-coding-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Amorsum/amor-coding-agent/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-`v0.20.0` 增加受控的 Python 依赖准备阶段。用户批准后，AMOR 从 `pyproject.toml`、常见 requirements 文件和验证命令中识别包，通过只接收包名的临时 Docker 容器从 PyPI 下载二进制 wheel，并安装到本次任务的独立依赖目录。依赖准备结束后，Agent 与 Verifier 仍使用无网络容器；Provider Key、用户主目录、Docker socket 和目标源码均不会进入联网安装容器。
+AMOR（Agentic Maintainer for Objective Repair）是一个**先冻结验收、再隔离修改、最后用独立证据交付**的本地 Python Coding Agent。它不把模型说“完成了”当成完成，而把可复现的验证结果、受限 Diff 和完整轨迹当成交付条件。
 
-`v0.19.0` 增加本地仓库预检和受保护工作区快照：项目仍需至少有一次 Git Commit，但不再要求用户先提交或 stash 当前修改。页面会列出未提交文件并要求确认，AMOR 随后从当前文件内容创建只读 Git 基线，在独立 worktree 中规划、执行和验证，全程不改动原工作区。
+`v1.0.0` 面向本地单用户与 AI 工程实习作品集场景，包含验收规划、Git worktree 隔离、Docker 命令沙箱、受控依赖准备、失败修复闭环、可观测工作台、可复现实验和验收后二次交付。详细版本记录见 [CHANGELOG](./CHANGELOG.md)。
+
+## 与普通 Coding Agent 的区别
+
+- **需求先变成契约：** 独立只读 Planner 先生成验收条件、允许路径和结构化外部用例；人工审批后契约被冻结并绑定 Git 基准。
+- **实现与用户工作区分离：** Agent 在隔离 worktree 中工作，文件工具受路径策略限制；命令默认进入资源受限的 Docker 容器。
+- **联网与执行分阶段：** 只有用户批准的依赖准备容器可访问固定 PyPI，且看不到源码和 Provider Key；Agent 与 Verifier 始终断网。
+- **完成由 Verifier 决定：** 可见测试、工作区外验收、Diff 范围和哈希证据共同决定结果，模型不能自行宣布成功。
+- **失败也是数据：** Token、轮次、工具调用、策略实验与失败类别进入结构化产物，便于复盘而不是只展示成功案例。
+
+## 架构
+
+```mermaid
+flowchart LR
+    U[用户任务] --> P[只读 Acceptance Planner]
+    P --> C[人工审批并冻结契约]
+    C --> W[隔离 Git worktree]
+    W --> A[模型 Agent + 受限文件工具]
+    D[PyPI-only 依赖容器<br/>不挂载源码] -->|只读依赖目录| A
+    A -->|无网络 Docker 命令| V[独立 Verifier]
+    C --> V
+    V -->|失败摘要与有限重试| A
+    V -->|通过| E[Diff + 哈希 + 轨迹 + 交付分支]
+```
+
+## 三步启动（Windows）
+
+前置条件：Git、Python 3.11+、Node.js 22+ 和已启动的 Docker Desktop。安装脚本会创建 `.venv`、安装包括 `pytest` 在内的测试依赖、构建前端，并准备固定沙箱镜像。
+
+```powershell
+git clone https://github.com/Amorsum/amor-coding-agent.git; cd amor-coding-agent
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+.venv\Scripts\amor web --artifacts artifacts
+```
+
+打开 `http://127.0.0.1:8765/`。Provider Key 可在页面中配置，只保留在当前 AMOR 服务进程内存中。
+
+## 可复现的计算器演示
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\create-demo-repository.ps1
+Get-Content artifacts\demo-calculator\AMOR-TASK.md
+```
+
+脚本会从版本化模板创建一个全新的 Git 仓库并生成初始 Commit。任务是修复 `average([])`，已知验收、允许修改范围、验证命令和 60 秒讲解脚本都在 [演示指南](./docs/DEMO.md) 中。
+
+## 可验证证据
+
+| 证据 | 当前结果 | 结论边界 |
+|---|---:|---|
+| 本地 Python 测试 | 108 passed, 1 skipped | 单元、集成、E2E；联网 Docker 用例默认跳过 |
+| Fake Provider Benchmark | 15 / 15 attempts | 证明基础设施可复现，不代表真实模型能力 |
+| Policy denial recovery | 3 / 3 attempts | 证明拒绝后修复闭环 |
+| `search-first` 对比 `broad` | 输入 Token -21.28%，文件读取 -45.45% | 脚本化行为下的受控策略实验 |
+| DeepSeek V4 Pro 案例 | direct 成功；structured 预算耗尽 | 单任务 `n=1` 负结果，不作泛化结论 |
+
+测试矩阵、原始运行 ID、复现命令和证据解释见 [Portfolio evidence](./docs/PORTFOLIO_EVIDENCE.md)。公开静态实验报告位于 [`out/`](./out/)，完整本地工作台不会部署到公网。
+
+## v1.0 适用范围
+
+AMOR v1.0 适合在本机对**至少有一个 Commit、包含已跟踪 Python 文件**的 Git 仓库执行有明确验收条件的修复任务。工作区可以有未提交修改，但必须先在页面确认并固定为受保护快照。当前不支持空文件夹、无 Commit 仓库、非 Python 项目、需要任意系统服务的构建，以及公网多租户部署；它也不是无人值守自动合并机器人。详见 [安全策略](./SECURITY.md)。
 
 ## 当前可运行链路
 
@@ -17,7 +79,7 @@ AMOR（Agentic Maintainer for Objective Repair）是一个由客观验证驱动�
 
 脚本化 Agent 用于稳定验证基础设施，不依赖真实 LLM。第二个任务会先应用一个不完整补丁，在测试失败后诊断并再次修复。模型 Agent 可使用 OpenAI 或 DeepSeek 的 Responses API 函数调用，但复用完全相同的工具策略和 Verifier。
 
-## 本地运行
+## 手动安装与离线基础设施演示
 
 ```powershell
 python -m venv .venv
@@ -31,6 +93,8 @@ python -m venv .venv
 ```powershell
 docker pull python:3.12-slim
 ```
+
+`pytest` 不是 AMOR 运行时本身的强制依赖，但它是本项目测试和大多数示例仓库的验证工具；使用 `.[dev]` 或 `scripts/setup.ps1` 会自动安装它。目标项目缺少已批准验证所需的 Python 依赖时，v1.0 会明确返回 `ENVIRONMENT_BLOCKED`，用户确认后再通过隔离的 PyPI bootstrap 安装，而不是要求用户预先猜测依赖。
 
 ## 本地 Web 工作台
 

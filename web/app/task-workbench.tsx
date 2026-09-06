@@ -616,7 +616,7 @@ function TaskCreationForm({
                 </div>
               </div>
               {!inspection.languages.includes('Python') && (
-                <p className="mt-3 text-xs text-rose-200">v0.20 的真实任务暂只支持包含已跟踪 Python 文件的仓库。</p>
+                <p className="mt-3 text-xs text-rose-200">v1.0 的真实任务暂只支持包含已跟踪 Python 文件的仓库。</p>
               )}
               {inspection.dirty && (
                 <>
