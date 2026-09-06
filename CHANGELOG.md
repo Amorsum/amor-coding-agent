@@ -3,6 +3,14 @@
 All notable changes to AMOR Coding Agent are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-09-06
+
+### Fixed
+
+- Added a bounded Python search fallback so clean machines and CI runners do not require ripgrep.
+- Matched the host UID/GID in Linux Docker containers so bind-mounted workspaces and dependency directories remain writable without root-owned output.
+- Updated GitHub Actions to their Node 24-based major versions.
+
 ## [1.0.0] - 2026-09-06
 
 First portfolio-ready local release.
@@ -38,6 +46,7 @@ First portfolio-ready local release.
 - Added repository preflight and protected snapshots for confirmed working-tree changes.
 - Preserved the user's original checkout while planning and execution use isolated worktrees.
 
+[1.0.1]: https://github.com/Amorsum/amor-coding-agent/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Amorsum/amor-coding-agent/releases/tag/v1.0.0
 [0.20.0]: https://github.com/Amorsum/amor-coding-agent/compare/v0.19.0...v1.0.0
 [0.19.0]: https://github.com/Amorsum/amor-coding-agent/commit/44ca601

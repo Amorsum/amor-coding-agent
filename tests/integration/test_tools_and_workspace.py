@@ -5,6 +5,7 @@ from amor.domain import AgentPhase
 from amor.policy import PolicyEngine
 from amor.tools import ToolRegistry
 from amor.trace import TraceRecorder
+from amor.tools import registry as registry_module
 from amor.workspace import WorkspaceManager
 
 
@@ -91,3 +92,31 @@ def test_unapproved_command_never_executes(tmp_path: Path) -> None:
 
     assert not result.ok
     assert not (workspace.root / "should-not-exist").exists()
+
+
+def test_search_falls_back_when_ripgrep_is_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    layout = BenchmarkLayout(project_root() / "benchmarks")
+    task = load_task(layout, "py_utils_average_empty")
+    workspace = WorkspaceManager().create_from_fixture(
+        layout.fixtures / task.fixture,
+        tmp_path / "run",
+    )
+    tools = ToolRegistry(
+        workspace,
+        PolicyEngine(workspace.root, task.allowed_paths, task.visible_validation_commands),
+        TraceRecorder(tmp_path / "run" / "trace.jsonl", task.task_id),
+        task.task_id,
+        task.limits.max_output_chars,
+        task.limits.max_file_bytes,
+        task.limits.max_seconds,
+    )
+    monkeypatch.setattr(registry_module.shutil, "which", lambda _: None)
+
+    result = tools.search_code(r"def\s+average", "src")
+
+    assert result.ok
+    assert "src/calculator.py" in result.output
+    assert result.metadata["search_backend"] == "python"

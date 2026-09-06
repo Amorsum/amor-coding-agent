@@ -92,6 +92,39 @@ def test_docker_executor_builds_a_networkless_resource_limited_command(
     assert argv[-4:] == ["python", "-c", "print('ok')", "/amor/inputs/0/plan.json"]
 
 
+def test_docker_executor_uses_the_posix_host_identity_for_bind_mounts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        command_module,
+        "docker_runtime_status",
+        lambda image: {"engine_available": True, "image_available": True, "reason": None},
+    )
+    monkeypatch.setattr(command_module, "_docker_user_arguments", lambda: ["--user", "1001:1001"])
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return CommandOutcome(returncode=0, output="ok", duration_ms=1, executor="docker")
+
+    monkeypatch.setattr(command_module, "_run_process", fake_run)
+    executor = DockerCommandExecutor(workspace, docker_config())
+
+    executor.run(
+        ["python", "-c", "print('ok')"],
+        cwd=workspace,
+        timeout_seconds=30,
+        max_output_chars=1_000,
+    )
+
+    argv = captured["command"]
+    assert isinstance(argv, list)
+    assert argv[argv.index("--user") : argv.index("--user") + 2] == ["--user", "1001:1001"]
+
+
 def test_docker_executor_rejects_unmounted_absolute_arguments(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

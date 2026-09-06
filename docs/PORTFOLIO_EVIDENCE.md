@@ -4,7 +4,7 @@ This document separates reproducible infrastructure evidence from model-quality 
 
 ## Automated verification
 
-- Local release run: 108 passed, 1 skipped.
+- Local release run: 110 passed, 1 skipped.
 - The skipped-by-default case performs a real networked dependency bootstrap and then verifies the
   installed dependency in an offline Docker container.
 - An explicit release run with `AMOR_RUN_NETWORK_TESTS=1` passed that boundary test.

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import shutil
 import subprocess
 import time
 import uuid
@@ -85,6 +87,8 @@ class ToolRegistry:
 
         def execute() -> ToolResult:
             root = self.policy.resolve_read(path)
+            if shutil.which("rg") is None:
+                return self._search_code_without_ripgrep(query, root)
             process = subprocess.run(
                 ["rg", "--line-number", "--color", "never", "--glob", "!.git/**", "--glob", "!.env*", query, str(root)],
                 cwd=self.workspace.root,
@@ -102,6 +106,63 @@ class ToolRegistry:
             return ToolResult(ok=True, summary=f"found {hits} matching lines", output=self._truncate(output))
 
         return self._invoke("search_code", arguments, execute)
+
+    def _search_code_without_ripgrep(self, query: str, root: Path) -> ToolResult:
+        """Keep the core search tool usable when ripgrep is not installed."""
+
+        try:
+            pattern = re.compile(query)
+        except re.error as exc:
+            return ToolResult(ok=False, summary="invalid search pattern", output=str(exc))
+
+        if root.is_file():
+            candidates = [root]
+        else:
+            relative_root = root.relative_to(self.workspace.root).as_posix()
+            pathspec = "." if relative_root == "." else relative_root
+            process = subprocess.run(
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", pathspec],
+                cwd=self.workspace.root,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=self.command_timeout_seconds,
+                check=False,
+            )
+            if process.returncode != 0:
+                return ToolResult(
+                    ok=False,
+                    summary="failed to enumerate files for search",
+                    output=self._truncate(process.stderr),
+                )
+            candidates = [self.workspace.root / line for line in process.stdout.splitlines()]
+
+        matches: list[str] = []
+        for candidate in candidates:
+            relative = candidate.relative_to(self.workspace.root)
+            if candidate.is_symlink() or any(
+                part in {".git", "__pycache__"} or part.startswith(".env")
+                for part in relative.parts
+            ):
+                continue
+            try:
+                if not candidate.is_file() or candidate.stat().st_size > self.max_file_bytes:
+                    continue
+                lines = candidate.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeError):
+                continue
+            for line_number, line in enumerate(lines, start=1):
+                if pattern.search(line):
+                    matches.append(f"{relative.as_posix()}:{line_number}:{line}")
+
+        output = "\n".join(matches)
+        return ToolResult(
+            ok=True,
+            summary=f"found {len(matches)} matching lines (Python fallback)",
+            output=self._truncate(output),
+            metadata={"search_backend": "python"},
+        )
 
     def read_file(self, path: str, start_line: int = 1, end_line: int = 200) -> ToolResult:
         arguments = {"path": path, "start_line": start_line, "end_line": end_line}

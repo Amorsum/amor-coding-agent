@@ -1,12 +1,12 @@
 {
   "schema_version": "v2",
-  "showcase_id": "df0b1bacc0937a6f",
+  "showcase_id": "e4752689e223f224",
   "title": "AMOR 规划策略实验",
   "experiment_id": "20260904T094932Z-4c76c186",
   "source_artifact_id": "58f92fe20a123a1d",
-  "generated_at": "2026-09-06T14:18:34.802376Z",
+  "generated_at": "2026-09-06T14:46:28.910889Z",
   "files": {
-    "index.html": "af91fe80487b115f3a3b9f4dddb13a8c1ecae344796fcc9ee5cb2cb0c0a7cb77",
-    "showcase.json": "407c0e273aaf784aac5573e4d537623a7891f99d549bc01d286b2c906bdba46f"
+    "index.html": "b1da25209525fd5c765188a7e617bac6af0f0caddc46ab90bbca686b3d85641a",
+    "showcase.json": "aace137850c3f4b15b3b24b5b53233ccd207ee5220666de703319dc83e17fb8f"
   }
 }

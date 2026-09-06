@@ -6,7 +6,7 @@
 
 AMOR（Agentic Maintainer for Objective Repair）是一个**先冻结验收、再隔离修改、最后用独立证据交付**的本地 Python Coding Agent。它不把模型说“完成了”当成完成，而把可复现的验证结果、受限 Diff 和完整轨迹当成交付条件。
 
-`v1.0.0` 面向本地单用户与 AI 工程实习作品集场景，包含验收规划、Git worktree 隔离、Docker 命令沙箱、受控依赖准备、失败修复闭环、可观测工作台、可复现实验和验收后二次交付。详细版本记录见 [CHANGELOG](./CHANGELOG.md)。
+`v1.0.1` 面向本地单用户与 AI 工程实习作品集场景，包含验收规划、Git worktree 隔离、Docker 命令沙箱、受控依赖准备、失败修复闭环、可观测工作台、可复现实验和验收后二次交付。详细版本记录见 [CHANGELOG](./CHANGELOG.md)。
 
 ## 与普通 Coding Agent 的区别
 
@@ -56,7 +56,7 @@ Get-Content artifacts\demo-calculator\AMOR-TASK.md
 
 | 证据 | 当前结果 | 结论边界 |
 |---|---:|---|
-| 本地 Python 测试 | 108 passed, 1 skipped | 单元、集成、E2E；联网 Docker 用例默认跳过 |
+| 本地 Python 测试 | 110 passed, 1 skipped | 单元、集成、E2E；联网 Docker 用例默认跳过 |
 | Fake Provider Benchmark | 15 / 15 attempts | 证明基础设施可复现，不代表真实模型能力 |
 | Policy denial recovery | 3 / 3 attempts | 证明拒绝后修复闭环 |
 | `search-first` 对比 `broad` | 输入 Token -21.28%，文件读取 -45.45% | 脚本化行为下的受控策略实验 |

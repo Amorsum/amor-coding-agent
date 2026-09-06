@@ -121,6 +121,7 @@ class DockerCommandExecutor:
             "never",
             "--name",
             container_name,
+            *_docker_user_arguments(),
             "--network",
             "none",
             "--cpus",
@@ -209,6 +210,7 @@ class DockerCommandExecutor:
             "never",
             "--name",
             container_name,
+            *_docker_user_arguments(),
             "--network",
             "bridge",
             "--cpus",
@@ -510,6 +512,14 @@ def _safe_host_environment() -> dict[str, str]:
 def _docker_control_environment() -> dict[str, str]:
     allowed = {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "DOCKER_HOST", "DOCKER_CONTEXT"}
     return {name: value for name, value in os.environ.items() if name.upper() in allowed}
+
+
+def _docker_user_arguments() -> list[str]:
+    """Match POSIX host ownership so bind-mounted workspaces stay writable."""
+
+    if os.name != "posix" or not hasattr(os, "getuid") or not hasattr(os, "getgid"):
+        return []
+    return ["--user", f"{os.getuid()}:{os.getgid()}"]
 
 
 def _is_python_executable(value: str) -> bool:
