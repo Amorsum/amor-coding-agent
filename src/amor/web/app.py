@@ -53,7 +53,7 @@ def create_app(
 
     app = FastAPI(
         title="AMOR Local Workbench API",
-        version="0.16.0",
+        version="0.17.0",
         description="Local task execution and artifact inspection API.",
         lifespan=lifespan,
     )

@@ -1,8 +1,16 @@
 {
-  "schema_version": "v1",
-  "showcase_id": "06b12a1f87785f10",
-  "generated_at": "2026-09-05T11:41:13.877806+00:00",
+  "schema_version": "v2",
+  "showcase_id": "cc10baf0fbf23fda",
+  "generated_at": "2026-09-06T06:42:50.604301+00:00",
   "title": "AMOR 规划策略实验",
+  "project": {
+    "name": "AMOR Coding Agent",
+    "version": "0.17.0",
+    "template_revision": 3,
+    "repository_url": "https://github.com/Amorsum/amor-coding-agent",
+    "public_mode": "static-read-only",
+    "full_workbench": "local-only"
+  },
   "experiment": {
     "experiment_id": "20260904T094932Z-4c76c186",
     "dimension": "planning",

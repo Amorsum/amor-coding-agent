@@ -11,6 +11,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from amor import __version__
+
+
+PUBLIC_REPOSITORY_URL = "https://github.com/Amorsum/amor-coding-agent"
+
 
 class ShowcaseError(RuntimeError):
     pass
@@ -69,7 +74,7 @@ class ShowcaseExporter:
 
         generated_at = datetime.now(timezone.utc)
         document = {
-            "schema_version": "v1",
+            "schema_version": "v2",
             "showcase_id": showcase_id,
             "generated_at": generated_at.isoformat(),
             **snapshot,
@@ -79,6 +84,7 @@ class ShowcaseExporter:
         ).encode("utf-8")
         html_bytes = _render_html(document).encode("utf-8")
         manifest = ShowcaseManifest(
+            schema_version="v2",
             showcase_id=showcase_id,
             title=cleaned_title,
             experiment_id=str(experiment["experiment_id"]),
@@ -232,6 +238,14 @@ def _public_snapshot(experiment: dict[str, Any], title: str) -> dict[str, Any]:
     comparison = experiment.get("comparison")
     return {
         "title": title,
+        "project": {
+            "name": "AMOR Coding Agent",
+            "version": __version__,
+            "template_revision": 3,
+            "repository_url": PUBLIC_REPOSITORY_URL,
+            "public_mode": "static-read-only",
+            "full_workbench": "local-only",
+        },
         "experiment": {
             "experiment_id": experiment.get("experiment_id"),
             "dimension": experiment.get("dimension"),
@@ -268,18 +282,22 @@ def _public_snapshot(experiment: dict[str, Any], title: str) -> dict[str, Any]:
 
 
 def _render_html(document: dict[str, Any]) -> str:
+    project = document["project"]
     experiment = document["experiment"]
     variants = document["variants"]
     attempts = document["attempts"]
     comparison = document["comparison"]
     title = html.escape(str(document["title"]))
+    repository_url = html.escape(str(project["repository_url"]), quote=True)
+    project_version = html.escape(str(project["version"]))
     provider = html.escape(f"{experiment.get('provider')}/{experiment.get('model') or '未记录'}")
     variant_cards = "".join(_variant_card(item) for item in variants)
     attempt_rows = "".join(_attempt_row(item) for item in attempts)
+    comparison_note = _comparison_note(experiment, attempts)
     fake_notice = (
-        '<p class="notice">此快照来自 Fake Provider，仅证明实验管道可复现，不代表真实模型质量。</p>'
+        '<p class="notice">本次运行使用 Fake Provider，用于检查实验流程，不用于评价模型效果。</p>'
         if experiment.get("fake_provider")
-        else '<p class="notice ok">此快照来自真实模型实验；结论应与数据集指纹和运行配置一并引用。</p>'
+        else '<p class="notice ok">本次运行使用真实模型，结果对应页面所列的数据集和运行配置。</p>'
     )
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -287,18 +305,21 @@ def _render_html(document: dict[str, Any]) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+  <meta name="description" content="AMOR Coding Agent 规划策略实验报告。">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'">
   <title>{title}</title>
   <style>{_SHOWCASE_CSS}</style>
 </head>
 <body>
   <main>
-    <header><div><span class="eyebrow">AMOR · VERIFIED EXPERIMENT</span><h1>{title}</h1><p>{provider} · {html.escape(str(experiment.get('dimension')))} · 重复 {html.escape(str(experiment.get('repeats')))} 次</p></div><code>{html.escape(str(document['showcase_id']))}</code></header>
+    <header><div><span class="eyebrow">AMOR · 实验报告</span><h1>{title}</h1><p>{provider} · {html.escape(str(experiment.get('dimension')))} · 重复 {html.escape(str(experiment.get('repeats')))} 次</p></div><div class="header-actions"><code>{html.escape(str(document['showcase_id']))}</code><a class="repository-link" href="{repository_url}" target="_blank" rel="noopener noreferrer" aria-label="在 GitHub 查看 AMOR Coding Agent 完整项目">GitHub 项目 <span aria-hidden="true">↗</span></a></div></header>
+    <section class="project-boundary" aria-labelledby="project-boundary-title"><div><span class="mode-badge">公开实验报告</span><h2 id="project-boundary-title">关于这个页面</h2><p>页面内容由本地实验结果生成，只保留汇总指标和任务状态。完整源码、架构文档与本地运行说明见 GitHub；任务执行使用本地工作台。</p></div><div class="project-meta"><span>AMOR Coding Agent</span><strong>v{project_version}</strong><a href="{repository_url}" target="_blank" rel="noopener noreferrer">源码与文档 <span aria-hidden="true">↗</span></a></div></section>
     {fake_notice}
+    {comparison_note}
     <section class="summary"><article><span>成功率差值</span><strong>{_percent(comparison.get('success_rate_delta'), signed=True)}</strong></article><article><span>输入 Token 降低</span><strong>{_percent(comparison.get('input_token_reduction_rate'))}</strong></article><article><span>工具调用降低</span><strong>{_percent(comparison.get('tool_call_reduction_rate'))}</strong></article><article><span>上下文字符降低</span><strong>{_percent(comparison.get('context_char_reduction_rate'))}</strong></article></section>
     <section><h2>策略结果</h2><div class="variants">{variant_cards}</div></section>
-    <section><h2>任务结果</h2><div class="table-wrap"><table><thead><tr><th>任务</th><th>策略</th><th>状态</th><th>Verifier</th><th>轮次</th><th>工具</th><th>Token</th></tr></thead><tbody>{attempt_rows}</tbody></table></div></section>
-    <footer><p>公开快照仅包含聚合指标与任务状态，不含代码、Diff、指令、轨迹或本地路径。</p><p>数据集：<code>{html.escape(str(experiment.get('dataset_version')))}</code> · 指纹：<code>{html.escape(str(experiment.get('dataset_fingerprint')))}</code></p></footer>
+    <section><h2>任务结果</h2><div class="table-wrap"><table><thead><tr><th>任务</th><th>上下文策略</th><th>规划策略</th><th>状态</th><th>Verifier</th><th>轮次</th><th>工具</th><th>Token</th></tr></thead><tbody>{attempt_rows}</tbody></table></div></section>
+    <footer><p>本页未包含代码、Diff、任务指令、模型轨迹或本地路径。</p><p>数据集：<code>{html.escape(str(experiment.get('dataset_version')))}</code> · 指纹：<code>{html.escape(str(experiment.get('dataset_fingerprint')))}</code></p><p>项目地址：<a href="{repository_url}" target="_blank" rel="noopener noreferrer">github.com/Amorsum/amor-coding-agent</a></p></footer>
   </main>
 </body>
 </html>
@@ -323,7 +344,8 @@ def _attempt_row(attempt: dict[str, Any]) -> str:
     return (
         "<tr>"
         f'<td><code>{html.escape(str(attempt.get("task_id")))}</code></td>'
-        f'<td>{html.escape(str(attempt.get("context_strategy") or attempt.get("planning_strategy")))}</td>'
+        f'<td>{html.escape(str(attempt.get("context_strategy") or "—"))}</td>'
+        f'<td>{html.escape(str(attempt.get("planning_strategy") or "—"))}</td>'
         f'<td><span class="pill {"pass" if passed else "fail"}">{html.escape(str(attempt.get("actual_status")))}</span></td>'
         f'<td>{"通过" if attempt.get("verifier_passed") else "未通过"}</td>'
         f'<td>{_integer(attempt.get("rounds"))}</td>'
@@ -331,6 +353,23 @@ def _attempt_row(attempt: dict[str, Any]) -> str:
         f'<td>{_integer(attempt.get("total_tokens"))}</td>'
         "</tr>"
     )
+
+
+def _comparison_note(experiment: dict[str, Any], attempts: list[dict[str, Any]]) -> str:
+    dimension = experiment.get("dimension")
+    if dimension == "planning":
+        fixed_values = sorted(
+            {str(item["context_strategy"]) for item in attempts if item.get("context_strategy")}
+        )
+        fixed = f"（统一为 {html.escape(fixed_values[0])}）" if len(fixed_values) == 1 else ""
+        return f'<p class="comparison-note">本次只比较规划策略；上下文策略保持一致{fixed}。</p>'
+    if dimension == "context":
+        fixed_values = sorted(
+            {str(item["planning_strategy"]) for item in attempts if item.get("planning_strategy")}
+        )
+        fixed = f"（统一为 {html.escape(fixed_values[0])}）" if len(fixed_values) == 1 else ""
+        return f'<p class="comparison-note">本次只比较上下文策略；规划策略保持一致{fixed}。</p>'
+    return ""
 
 
 def _load_manifest(path: Path, output_root: Path) -> ShowcaseManifest:
@@ -381,5 +420,5 @@ def _integer(value: Any) -> str:
 
 
 _SHOWCASE_CSS = """
-:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#071017;color:#e8f4f7}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% 0,#0d3540 0,transparent 28rem),#071017}main{width:min(1120px,calc(100% - 2rem));margin:auto;padding:3rem 0 4rem}header{display:flex;justify-content:space-between;gap:2rem;align-items:flex-start;border-bottom:1px solid #24414a;padding-bottom:2rem}h1{font-size:clamp(2rem,6vw,4.5rem);letter-spacing:-.055em;line-height:1;margin:.45rem 0 1rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.13em;color:#8cb0b8;margin:2.5rem 0 1rem}.eyebrow{font:700 .72rem ui-monospace,monospace;letter-spacing:.16em;color:#68e5ef}header p,footer,.notice{color:#9ab2b8}.notice{border:1px solid #695523;background:#30270f;padding:1rem;border-radius:.75rem;margin:1.5rem 0}.notice.ok{border-color:#225d50;background:#0c2b27;color:#a1e8d7}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#29434a;border:1px solid #29434a;margin-top:1.5rem}.summary article{background:#0a161d;padding:1.25rem}.summary span,dt{font-size:.75rem;color:#8da6ac}.summary strong{display:block;font:600 1.8rem ui-monospace,monospace;margin-top:.65rem}.variants{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem}.variant{border:1px solid #29434a;background:#0b1920;padding:1.35rem;border-radius:.8rem}.variant h3{font:600 1.3rem ui-monospace,monospace;margin:.65rem 0 1.4rem}.status{font-size:.7rem;text-transform:uppercase;color:#71e4c3}.variant dl{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:0}.variant dl div{border-top:1px solid #20383f;padding-top:.75rem}.variant dd{font:600 1rem ui-monospace,monospace;margin:.3rem 0 0}.table-wrap{overflow:auto;border:1px solid #29434a;border-radius:.8rem}table{width:100%;border-collapse:collapse;min-width:760px;background:#0a161d}th,td{text-align:left;border-bottom:1px solid #1e343b;padding:.8rem 1rem;font-size:.8rem}th{color:#87a4ab;font-weight:500}.pill{font:700 .68rem ui-monospace,monospace;padding:.25rem .45rem;border-radius:999px}.pill.pass{background:#123b32;color:#83efd2}.pill.fail{background:#402026;color:#ffadb8}code{font-family:ui-monospace,SFMono-Regular,monospace;color:#b9f5f7}footer{border-top:1px solid #29434a;margin-top:2.5rem;padding-top:1.25rem;font-size:.75rem;line-height:1.6}@media(max-width:760px){main{padding-top:1.5rem}header{display:block}.summary{grid-template-columns:1fr 1fr}.variants{grid-template-columns:1fr}}@media(max-width:460px){.summary{grid-template-columns:1fr}}
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#071017;color:#e8f4f7}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% 0,#0d3540 0,transparent 28rem),#071017}a{color:#8be9ee;text-underline-offset:.22em}a:hover{color:#c4fbfd}main{width:min(1120px,calc(100% - 2rem));margin:auto;padding:3rem 0 4rem}header{display:flex;justify-content:space-between;gap:2rem;align-items:flex-start;border-bottom:1px solid #24414a;padding-bottom:2rem}.header-actions{display:flex;min-width:max-content;flex-direction:column;align-items:flex-end;gap:.8rem}.repository-link{display:inline-flex;align-items:center;gap:.5rem;border:1px solid #4ec8ce;background:#102d34;border-radius:.65rem;padding:.72rem 1rem;color:#d7feff;font-size:.9rem;font-weight:700;text-decoration:none}.repository-link:hover{background:#16404a;color:#fff}h1{font-size:clamp(2rem,6vw,4.5rem);letter-spacing:-.055em;line-height:1;margin:.45rem 0 1rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.13em;color:#8cb0b8;margin:2.5rem 0 1rem}.eyebrow{font:700 .72rem ui-monospace,monospace;letter-spacing:.16em;color:#68e5ef}header p,footer,.notice{color:#9ab2b8}.project-boundary{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(15rem,.7fr);gap:2rem;align-items:end;border:1px solid #2d5961;background:linear-gradient(135deg,#0d2028,#0a171d);padding:1.35rem;margin:1.5rem 0;border-radius:.85rem}.project-boundary h2{margin:.7rem 0;text-transform:none;letter-spacing:-.015em;color:#e8f4f7;font-size:1.25rem}.project-boundary p{max-width:46rem;margin:0;color:#a7bdc2;line-height:1.65}.mode-badge{display:inline-flex;border:1px solid #24695e;border-radius:999px;background:#0c302a;padding:.3rem .6rem;color:#92eed5;font:700 .72rem ui-monospace,monospace}.project-meta{display:grid;gap:.5rem;border-left:1px solid #29434a;padding-left:1.25rem}.project-meta span{color:#8da6ac;font-size:.85rem}.project-meta strong{font:600 1.45rem ui-monospace,monospace}.project-meta a{font-size:.9rem}.notice{border:1px solid #695523;background:#30270f;padding:1rem;border-radius:.75rem;margin:1.5rem 0}.notice.ok{border-color:#225d50;background:#0c2b27;color:#a1e8d7}.comparison-note{margin:1rem 0;color:#b5c8cc;font-size:.9rem}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#29434a;border:1px solid #29434a;margin-top:1.5rem}.summary article{background:#0a161d;padding:1.25rem}.summary span,dt{font-size:.75rem;color:#8da6ac}.summary strong{display:block;font:600 1.8rem ui-monospace,monospace;margin-top:.65rem}.variants{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem}.variant{border:1px solid #29434a;background:#0b1920;padding:1.35rem;border-radius:.8rem}.variant h3{font:600 1.3rem ui-monospace,monospace;margin:.65rem 0 1.4rem}.status{font-size:.7rem;text-transform:uppercase;color:#71e4c3}.variant dl{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:0}.variant dl div{border-top:1px solid #20383f;padding-top:.75rem}.variant dd{font:600 1rem ui-monospace,monospace;margin:.3rem 0 0}.table-wrap{overflow:auto;border:1px solid #29434a;border-radius:.8rem}table{width:100%;border-collapse:collapse;min-width:900px;background:#0a161d}th,td{text-align:left;border-bottom:1px solid #1e343b;padding:.8rem 1rem;font-size:.8rem}th{color:#87a4ab;font-weight:500}.pill{font:700 .68rem ui-monospace,monospace;padding:.25rem .45rem;border-radius:999px}.pill.pass{background:#123b32;color:#83efd2}.pill.fail{background:#402026;color:#ffadb8}code{font-family:ui-monospace,SFMono-Regular,monospace;color:#b9f5f7}footer{border-top:1px solid #29434a;margin-top:2.5rem;padding-top:1.25rem;font-size:.75rem;line-height:1.6}@media(max-width:760px){main{padding-top:1.5rem}header{display:block}.header-actions{align-items:flex-start;margin-top:1.25rem}.project-boundary{grid-template-columns:1fr}.project-meta{border-left:0;border-top:1px solid #29434a;padding:1rem 0 0}.summary{grid-template-columns:1fr 1fr}.variants{grid-template-columns:1fr}}@media(max-width:460px){.summary{grid-template-columns:1fr}.repository-link{width:100%;justify-content:center}}
 """

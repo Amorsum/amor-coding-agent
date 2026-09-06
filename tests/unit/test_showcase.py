@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from amor.showcase import ShowcaseError, ShowcaseExporter
+from amor.showcase import PUBLIC_REPOSITORY_URL, ShowcaseError, ShowcaseExporter
 from amor.web.artifacts import ArtifactStore
 
 
@@ -124,6 +124,18 @@ def test_showcase_export_is_static_hashed_and_redacted(tmp_path: Path) -> None:
     assert "workspace_path" not in combined
     assert "AMOR &lt;公开&gt; &amp; evidence" in page
     assert 'Content-Security-Policy' in page
+    assert manifest.schema_version == "v2"
+    assert f'"repository_url": "{PUBLIC_REPOSITORY_URL}"' in payload
+    assert page.count(f'href="{PUBLIC_REPOSITORY_URL}"') == 3
+    assert '"template_revision": 3' in payload
+    assert "公开实验报告" in page
+    assert "关于这个页面" in page
+    assert "<th>上下文策略</th><th>规划策略</th>" in page
+    assert "<td>search-first</td><td>direct</td>" in page
+    assert "<td>search-first</td><td>structured</td>" in page
+    assert "本次只比较规划策略；上下文策略保持一致（统一为 search-first）" in page
+    assert "<form" not in page
+    assert "<script" not in page
     assert exporter.get(manifest.showcase_id) == manifest
 
 
